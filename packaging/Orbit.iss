@@ -57,8 +57,11 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-; Published self-contained WinUI app + Core Host (Orbit.Core.Host.exe beside Orbit.App.exe)
+; Published self-contained WinUI app + Core Host + orbit-mcp (Hermes MCP bridge)
 Source: "{#PublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Also stage MCP under the installing user's LocalAppData so Hermes can launch immediately
+; even before the first Connect (Connect still re-syncs from {app}\orbit-mcp on upgrade).
+Source: "{#PublishDir}\orbit-mcp\*"; DestDir: "{localappdata}\Orbit\orbit-mcp"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\Assets\AppIcon.ico"

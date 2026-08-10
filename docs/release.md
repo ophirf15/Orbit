@@ -8,11 +8,15 @@ Daily debug stays unpackaged (`WindowsPackageType=None`). Takeaway installs use 
 2. Copy the setup exe to the target PC if needed.
 3. Run the setup wizard (Next → install folder → Finish). Needs admin once.
 4. Launch Orbit from Start / Desktop. Data lives under `%LocalAppData%\Orbit\`.
-5. Optional Hermes: Settings → **Connect Hermes** (syncs `docs/hermes` skills + cron into `%LocalAppData%\hermes\`). Native Hermes gateway required separately.
+5. Optional Hermes: Settings → **Connect Hermes** (syncs `docs/hermes` skills + cron + MCP into `%LocalAppData%\hermes\`). Native Hermes gateway required separately.
 
-Includes self-contained `Orbit.App.exe` + `Orbit.Core.Host.exe` (x64) **and** `docs/hermes/` (SOUL, Orbit skills, portable cron/scripts). Windows 10 1809+ / Windows 11.
+Includes self-contained `Orbit.App.exe` + `Orbit.Core.Host.exe` (x64), **`orbit-mcp/`** (`Orbit.Mcp.exe` Hermes stdio bridge), **and** `docs/hermes/` (SOUL, Orbit skills, portable cron/scripts). Windows 10 1809+ / Windows 11.
+
+Installer also stages `%LocalAppData%\Orbit\orbit-mcp\`. Connect re-syncs that folder from `{app}\orbit-mcp` on upgrade so Hermes keeps a working MCP path.
 
 If Hermes shows `Skill(s) not found … pulse-refresh`, the install is missing `docs/hermes` beside the EXE (old pack) or Connect was never re-run after upgrading — install a current setup and Connect again.
+
+If Hermes MCP test says **Orbit: Connection closed**, the install is missing `orbit-mcp` (old pack) — install a current setup, confirm `%LocalAppData%\Orbit\orbit-mcp\Orbit.Mcp.exe` exists, then Connect again / `/reload-mcp`.
 
 ## Updating an installed wizard build (GitHub)
 

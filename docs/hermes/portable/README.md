@@ -69,8 +69,11 @@ Secondary-home proof on Dev: provision a temp folder with `HermesHomeProvisioner
 │ Windows (Orbit App + Core)  │◄────────────────────────►│ Hermes host                  │
 │ Core: http://<ip>:8741      │   ORBIT_CORE_URL + key   │ API :8642 + API_SERVER_KEY   │
 │ App → Hermes :8642 + key    │◄────────────────────────►│ mcp_servers.orbit → Orbit.Mcp │
-└─────────────────────────────┘                          └──────────────────────────────┘
+│ {app}\orbit-mcp\ (shipped)  │  Connect syncs to        │ %LocalAppData%\Orbit\orbit-mcp│
+└─────────────────────────────┘  LocalAppData            └──────────────────────────────┘
 ```
+
+Installer ships self-contained `Orbit.Mcp.exe` under `{app}\orbit-mcp\` and stages the same folder into `%LocalAppData%\Orbit\orbit-mcp\`. Connect rewrites Hermes `mcp_servers.orbit` to that LocalAppData path — no manual `dotnet publish` on the work PC.
 
 App-managed `docker compose up` from Settings is still a follow-on; local folder prep + Connect & save cover the installer-friendly path (ADR 0022).
 

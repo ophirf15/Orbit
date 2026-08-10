@@ -4,63 +4,121 @@ namespace Orbit.Infrastructure.Hermes;
 
 /// <summary>
 /// Ensures a runnable Orbit.Mcp stdio binary exists for Hermes mcp_servers.orbit.
+/// Packaged installs ship <c>{app}\orbit-mcp\</c>; Connect syncs that into LocalAppData
+/// so Hermes always launches a stable path without needing the Orbit source tree.
 /// </summary>
 public static class OrbitMcpPublisher
 {
-    public static string DefaultPublishDirectory =>
-        Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Orbit",
-            "orbit-mcp");
+    /// <summary>
+    /// LocalAppData launch folder Hermes points at. Override with <c>ORBIT_MCP_DIR</c> in tests.
+    /// </summary>
+    public static string DefaultPublishDirectory
+    {
+        get
+        {
+            var env = Environment.GetEnvironmentVariable("ORBIT_MCP_DIR");
+            if (!string.IsNullOrWhiteSpace(env))
+            {
+                return env.Trim();
+            }
+
+            return Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Orbit",
+                "orbit-mcp");
+        }
+    }
 
     public static string DefaultDllPath => Path.Combine(DefaultPublishDirectory, "Orbit.Mcp.dll");
 
     public static string DefaultExePath => Path.Combine(DefaultPublishDirectory, "Orbit.Mcp.exe");
 
     /// <summary>
-    /// Returns a path Hermes can launch via <c>dotnet &lt;dll&gt;</c>. Prefers a published
-    /// LocalAppData copy so Hermes survives Orbit rebuilds.
+    /// Returns a path Hermes can launch. Prefers self-contained <c>Orbit.Mcp.exe</c>
+    /// (no <c>dotnet</c> on PATH required); falls back to <c>dotnet Orbit.Mcp.dll</c>.
     /// </summary>
     public static string EnsurePublished(string? preferredSource = null)
     {
-        // Prefer a real `dotnet publish` output — copying Debug bin often misses EventLog deps
-        // and Hermes then fails with "Connection closed".
-        var csproj = FindMcpCsproj();
-        if (csproj is not null && TryDotnetPublish(csproj, DefaultPublishDirectory)
-            && File.Exists(DefaultDllPath))
-        {
-            return DefaultDllPath;
-        }
+        // Packaged Orbit ships orbit-mcp beside the app — sync into LocalAppData first.
+        SyncBundledIntoLocalAppData();
 
         if (!string.IsNullOrWhiteSpace(preferredSource) && File.Exists(preferredSource))
         {
-            return PreferDll(PublishFrom(preferredSource.Trim()));
+            return PreferLaunchable(PublishFrom(preferredSource.Trim()));
         }
 
-        if (File.Exists(DefaultDllPath))
+        var local = PreferLaunchableIfPresent(DefaultPublishDirectory);
+        if (local is not null)
         {
-            return DefaultDllPath;
+            return local;
         }
 
+        // Dev / CI: copy an already-built output (fast) before a full publish.
         var built = FindBuiltMcp();
         if (built is not null)
         {
-            return PreferDll(PublishFrom(built));
+            return PreferLaunchable(PublishFrom(built));
         }
 
-        return DefaultDllPath;
+        var csproj = FindMcpCsproj();
+        if (csproj is not null && TryDotnetPublish(csproj, DefaultPublishDirectory))
+        {
+            var published = PreferLaunchableIfPresent(DefaultPublishDirectory);
+            if (published is not null)
+            {
+                return published;
+            }
+        }
+
+        // Last resort: still return the expected LocalAppData path so Connect writes MCP YAML;
+        // Hermes will fail loudly until an installer/sync provides the binary.
+        return File.Exists(DefaultExePath) ? DefaultExePath : DefaultDllPath;
     }
 
-    private static string PreferDll(string publishedPath)
+    /// <summary>
+    /// Copies <c>{app}\orbit-mcp</c> (or an explicit source folder) into LocalAppData.
+    /// Safe to call repeatedly; overwrites files so upgrades refresh Hermes' launch target.
+    /// </summary>
+    public static bool SyncBundledIntoLocalAppData(string? bundledDirectory = null)
     {
-        // Framework-dependent Orbit.Mcp.exe often fails outside `dotnet` (EventLog binding).
-        // Hermes should always launch via: dotnet <Orbit.Mcp.dll>
-        if (File.Exists(DefaultDllPath))
+        var sourceDir = bundledDirectory;
+        if (string.IsNullOrWhiteSpace(sourceDir) || !Directory.Exists(sourceDir))
         {
-            return DefaultDllPath;
+            sourceDir = FindBundledOrbitMcpDirectory();
         }
 
-        return publishedPath;
+        if (sourceDir is null)
+        {
+            return false;
+        }
+
+        var hasPayload = File.Exists(Path.Combine(sourceDir, "Orbit.Mcp.exe"))
+            || File.Exists(Path.Combine(sourceDir, "Orbit.Mcp.dll"));
+        if (!hasPayload)
+        {
+            return false;
+        }
+
+        // Skip no-op copy when already synced to the same folder.
+        if (PathsEqual(sourceDir, DefaultPublishDirectory))
+        {
+            return true;
+        }
+
+        Directory.CreateDirectory(DefaultPublishDirectory);
+        foreach (var file in Directory.EnumerateFiles(sourceDir))
+        {
+            var name = Path.GetFileName(file);
+            if (name.EndsWith(".pdb", StringComparison.OrdinalIgnoreCase)
+                || name.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            File.Copy(file, Path.Combine(DefaultPublishDirectory, name), overwrite: true);
+        }
+
+        return File.Exists(DefaultExePath) || File.Exists(DefaultDllPath);
     }
 
     public static string PublishFrom(string sourcePath)
@@ -73,7 +131,6 @@ public static class OrbitMcpPublisher
         foreach (var file in Directory.EnumerateFiles(sourceDir))
         {
             var name = Path.GetFileName(file);
-            // Skip huge/unnecessary artifacts
             if (name.EndsWith(".pdb", StringComparison.OrdinalIgnoreCase)
                 || name.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
             {
@@ -86,28 +143,57 @@ public static class OrbitMcpPublisher
         return isExe ? DefaultExePath : DefaultDllPath;
     }
 
+    /// <summary>Self-contained exe first (installer path); framework-dependent dll second.</summary>
+    public static string PreferLaunchable(string publishedPath)
+    {
+        if (File.Exists(DefaultExePath))
+        {
+            return DefaultExePath;
+        }
+
+        if (File.Exists(DefaultDllPath))
+        {
+            return DefaultDllPath;
+        }
+
+        return publishedPath;
+    }
+
+    private static string? PreferLaunchableIfPresent(string directory)
+    {
+        var exe = Path.Combine(directory, "Orbit.Mcp.exe");
+        if (File.Exists(exe))
+        {
+            return exe;
+        }
+
+        var dll = Path.Combine(directory, "Orbit.Mcp.dll");
+        return File.Exists(dll) ? dll : null;
+    }
+
+    private static string? FindBundledOrbitMcpDirectory()
+    {
+        foreach (var start in EnumerateSearchRoots())
+        {
+            var dir = start;
+            for (var i = 0; i < 6 && dir is not null; i++, dir = dir.Parent)
+            {
+                var candidate = Path.Combine(dir.FullName, "orbit-mcp");
+                if (Directory.Exists(candidate)
+                    && (File.Exists(Path.Combine(candidate, "Orbit.Mcp.exe"))
+                        || File.Exists(Path.Combine(candidate, "Orbit.Mcp.dll"))))
+                {
+                    return candidate;
+                }
+            }
+        }
+
+        return null;
+    }
+
     private static string? FindBuiltMcp()
     {
-        var roots = new List<DirectoryInfo>();
-        try
-        {
-            roots.Add(new DirectoryInfo(AppContext.BaseDirectory));
-        }
-        catch
-        {
-            // ignore
-        }
-
-        try
-        {
-            roots.Add(new DirectoryInfo(Directory.GetCurrentDirectory()));
-        }
-        catch
-        {
-            // ignore
-        }
-
-        foreach (var start in roots)
+        foreach (var start in EnumerateSearchRoots())
         {
             var dir = start;
             for (var i = 0; i < 10 && dir is not null; i++, dir = dir.Parent)
@@ -118,6 +204,8 @@ public static class OrbitMcpPublisher
                     Path.Combine(dir.FullName, "src", "Orbit.Mcp", "bin", "Release", "net9.0", "Orbit.Mcp.dll"),
                     Path.Combine(dir.FullName, "artifacts", "orbit-mcp", "Orbit.Mcp.exe"),
                     Path.Combine(dir.FullName, "artifacts", "orbit-mcp", "Orbit.Mcp.dll"),
+                    Path.Combine(dir.FullName, "artifacts", "installer", "publish", "orbit-mcp", "Orbit.Mcp.exe"),
+                    Path.Combine(dir.FullName, "artifacts", "installer", "publish", "orbit-mcp", "Orbit.Mcp.dll"),
                 };
                 foreach (var c in candidates)
                 {
@@ -134,17 +222,74 @@ public static class OrbitMcpPublisher
 
     private static string? FindMcpCsproj()
     {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        for (var i = 0; i < 10 && dir is not null; i++, dir = dir.Parent)
+        foreach (var start in EnumerateSearchRoots())
         {
-            var csproj = Path.Combine(dir.FullName, "src", "Orbit.Mcp", "Orbit.Mcp.csproj");
-            if (File.Exists(csproj))
+            var dir = start;
+            for (var i = 0; i < 10 && dir is not null; i++, dir = dir.Parent)
             {
-                return csproj;
+                var csproj = Path.Combine(dir.FullName, "src", "Orbit.Mcp", "Orbit.Mcp.csproj");
+                if (File.Exists(csproj))
+                {
+                    return csproj;
+                }
             }
         }
 
         return null;
+    }
+
+    private static IEnumerable<DirectoryInfo> EnumerateSearchRoots()
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        void Add(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return;
+            }
+
+            try
+            {
+                var full = Path.GetFullPath(path);
+                if (seen.Add(full))
+                {
+                    // deferred yield via list below
+                }
+            }
+            catch
+            {
+                // ignore bad paths
+            }
+        }
+
+        var paths = new List<string>();
+        try
+        {
+            paths.Add(AppContext.BaseDirectory);
+        }
+        catch
+        {
+            // ignore
+        }
+
+        try
+        {
+            paths.Add(Directory.GetCurrentDirectory());
+        }
+        catch
+        {
+            // ignore
+        }
+
+        foreach (var p in paths)
+        {
+            Add(p);
+        }
+
+        foreach (var p in seen)
+        {
+            yield return new DirectoryInfo(p);
+        }
     }
 
     private static bool TryDotnetPublish(string csproj, string outputDir)
@@ -155,7 +300,9 @@ public static class OrbitMcpPublisher
             var psi = new ProcessStartInfo
             {
                 FileName = "dotnet",
-                Arguments = $"publish \"{csproj}\" -c Release -o \"{outputDir}\" --nologo -v q",
+                // Self-contained so Hermes can exec Orbit.Mcp.exe without requiring `dotnet` on PATH.
+                Arguments =
+                    $"publish \"{csproj}\" -c Release -r win-x64 --self-contained true -o \"{outputDir}\" --nologo -v q",
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -170,6 +317,21 @@ public static class OrbitMcpPublisher
             _ = proc.StandardOutput.ReadToEnd();
             _ = proc.StandardError.ReadToEnd();
             return proc.WaitForExit(180_000) && proc.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool PathsEqual(string a, string b)
+    {
+        try
+        {
+            return string.Equals(
+                Path.GetFullPath(a).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                Path.GetFullPath(b).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                StringComparison.OrdinalIgnoreCase);
         }
         catch
         {

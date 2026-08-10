@@ -149,10 +149,35 @@ if (-not $SkipPublish) {
         throw "Orbit.Core.Host publish failed with exit $LASTEXITCODE"
     }
 
+    $mcpProject = Join-Path $root "src\Orbit.Mcp\Orbit.Mcp.csproj"
+    $mcpOut = Join-Path $publishDir "orbit-mcp"
+    Write-Host "Publishing Orbit.Mcp (self-contained win-x64) into publish\orbit-mcp..."
+    if (Test-Path $mcpOut) {
+        Remove-Item -Recurse -Force $mcpOut
+    }
+    New-Item -ItemType Directory -Force -Path $mcpOut | Out-Null
+    & $dotnet @(
+        "publish", $mcpProject,
+        "-c", $Configuration,
+        "-r", "win-x64",
+        "--self-contained", "true",
+        "-p:PublishTrimmed=false",
+        "-p:Version=$Version",
+        "-p:InformationalVersion=$Version",
+        "-o", $mcpOut
+    )
+    if ($LASTEXITCODE -ne 0) {
+        throw "Orbit.Mcp publish failed with exit $LASTEXITCODE"
+    }
+
     $appExe = Join-Path $publishDir "Orbit.App.exe"
     $hostExe = Join-Path $publishDir "Orbit.Core.Host.exe"
+    $mcpExe = Join-Path $mcpOut "Orbit.Mcp.exe"
+    $mcpDll = Join-Path $mcpOut "Orbit.Mcp.dll"
     if (-not (Test-Path $appExe)) { throw "Missing $appExe after publish" }
     if (-not (Test-Path $hostExe)) { throw "Missing $hostExe after publish" }
+    if (-not (Test-Path $mcpExe)) { throw "Missing $mcpExe after publish (Hermes MCP bridge)" }
+    if (-not (Test-Path $mcpDll)) { throw "Missing $mcpDll after publish (Hermes MCP bridge)" }
 
     $hermesDocs = Join-Path $publishDir "docs\hermes"
     if (-not (Test-Path (Join-Path $hermesDocs "SOUL.md"))) {
@@ -168,11 +193,13 @@ if (-not $SkipPublish) {
         "====================",
         "Orbit.App.exe          - WinUI shell",
         "Orbit.Core.Host.exe    - local API (started by the app)",
+        "orbit-mcp\             - Orbit.Mcp.exe (Hermes MCP stdio bridge → Core)",
         "docs/hermes/           - SOUL, skills, cron/webhook manifests (Connect Hermes)",
         "",
         "Data lives under %LocalAppData%\Orbit\ after first launch.",
+        "Connect Hermes copies orbit-mcp into %LocalAppData%\Orbit\orbit-mcp\ and wires Hermes config.",
         "Hermes (agent) is optional and separate - see Settings > Hermes after install.",
-        "After install: Settings → Connect Hermes so skills (pulse-refresh, duty-scan, …) sync into HERMES_HOME."
+        "After install: Settings → Connect Hermes so skills + MCP sync into HERMES_HOME."
     ) | Set-Content -Path (Join-Path $publishDir "INSTALL-README.txt") -Encoding utf8
 }
 
