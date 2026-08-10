@@ -1,0 +1,77 @@
+# Optional non-MCP checklist: Core Host HTTP tools Hermes (or curl) can call
+# with Authorization: Bearer <ORBIT_API_KEY>. Prefer mcp_servers.snippet.yaml.
+# Bodies: docs/hermes/orbit-tools.md
+
+http_tools:
+  base_url: "${ORBIT_CORE_URL}"  # e.g. http://192.168.1.50:8741
+  headers:
+    Authorization: "Bearer ${ORBIT_API_KEY}"
+    Content-Type: application/json
+  tools:
+    - name: orbit_get_related_context
+      method: POST
+      path: /v1/agent/tools/orbit_get_related_context
+      body:
+        targetType: project
+        targetId: "<guid>"
+    - name: orbit_search
+      method: POST
+      path: /v1/agent/tools/orbit_search
+      body:
+        q: "<query>"
+        focusProjectId: null
+    - name: orbit_get_project
+      method: POST
+      path: /v1/agent/tools/orbit_get_project
+      body:
+        id: "<project-guid>"
+    - name: orbit_get_contact
+      method: POST
+      path: /v1/agent/tools/orbit_get_contact
+      body:
+        id: "<contact-guid>"
+    - name: orbit_list_contacts
+      method: POST
+      path: /v1/agent/tools/orbit_list_contacts
+      body:
+        category: pending
+        limit: 50
+    - name: orbit_update_contact
+      method: POST
+      path: /v1/agent/tools/orbit_update_contact
+      body:
+        id: "<contact-guid>"
+        patch:
+          category: client
+          title: "Account Manager"
+        provenance: "From signature on email"
+        actor: agent
+    - name: orbit_archive_contact
+      method: POST
+      path: /v1/agent/tools/orbit_archive_contact
+      body:
+        id: "<contact-guid>"
+        excludeAsResident: true
+    - name: orbit_flag_resident
+      method: POST
+      path: /v1/agent/tools/orbit_flag_resident
+      body:
+        id: "<contact-guid>"
+    - name: orbit_create_task
+      method: POST
+      path: /v1/agent/tools/orbit_create_task
+      body:
+        title: "<title>"
+        projectId: "<project-guid>"
+        actor: agent
+        provenance:
+          actor: hermes
+          channel: telegram
+          hermesSessionId: "<session>"
+    - name: orbit_update_task
+      method: POST
+      path: /v1/agent/tools/orbit_update_task
+      body:
+        id: "<task-guid>"
+        status: "InProgress"
+        actor: agent

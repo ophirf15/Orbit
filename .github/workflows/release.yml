@@ -1,0 +1,173 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without leading v (e.g. 0.1.2). Creates tag v0.1.2 and publishes Orbit-Setup."
+        required: true
+        type: string
+      draft:
+        description: "Create as a draft release (not visible to /releases/latest)"
+        required: false
+        default: false
+        type: boolean
+      skip_pack:
+        description: "Skip installer/MSIX pack (tests-only dry run)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release version
+        id: ver
+        shell: pwsh
+        run: |
+          $raw = ""
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $raw = "${{ github.event.inputs.version }}".Trim()
+          }
+          else {
+            # tag push: refs/tags/v0.1.2 → 0.1.2
+            $raw = "${{ github.ref_name }}".Trim()
+          }
+
+          if ([string]::IsNullOrWhiteSpace($raw)) {
+            throw "Release version is required."
+          }
+
+          $version = $raw.TrimStart("v", "V")
+          if ($version -notmatch '^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$') {
+            throw "Version '$raw' is not valid semver (expected e.g. 0.1.2 or 0.1.2-beta.1)."
+          }
+
+          $tag = "v$version"
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Release version: $version (tag $tag)"
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore + build
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Program Files\dotnet;" + $env:PATH
+          ./build.ps1 -Configuration Release
+
+      - name: Test
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Program Files\dotnet;" + $env:PATH
+          ./build.ps1 -Configuration Release -Test -NoRestore
+
+      - name: Materialize signing cert (optional)
+        shell: pwsh
+        env:
+          SIGNING_CERT_BASE64: ${{ secrets.SIGNING_CERT_BASE64 }}
+          SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+        run: |
+          # secrets cannot be referenced in step `if:` — skip here when unset
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_CERT_BASE64)) {
+            Write-Host "SIGNING_CERT_BASE64 not set; skipping signing cert."
+            exit 0
+          }
+          $bytes = [Convert]::FromBase64String($env:SIGNING_CERT_BASE64)
+          $path = Join-Path $env:RUNNER_TEMP "orbit-signing.pfx"
+          [IO.File]::WriteAllBytes($path, $bytes)
+          "ORBIT_SIGNING_CERT_PATH=$path" | Out-File -FilePath $env:GITHUB_ENV -Append
+          if (-not [string]::IsNullOrWhiteSpace($env:SIGNING_CERT_PASSWORD)) {
+            "ORBIT_SIGNING_CERT_PASSWORD=$($env:SIGNING_CERT_PASSWORD)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          }
+
+      - name: Pack takeaway installer (Inno Setup)
+        id: pack_installer
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_pack != 'true' }}
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Program Files\dotnet;" + $env:PATH
+          ./scripts/pack-installer.ps1 -Configuration Release -Version "${{ steps.ver.outputs.version }}"
+
+      - name: Pack MSIX (best-effort)
+        id: pack
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_pack != 'true' }}
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Program Files\dotnet;" + $env:PATH
+          ./scripts/pack-msix.ps1 -Configuration Release -OutputDir artifacts/msix
+
+      - name: Checksums
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_pack != 'true' }}
+        shell: pwsh
+        run: |
+          $lines = @()
+          $msixDir = "artifacts/msix"
+          New-Item -ItemType Directory -Force -Path $msixDir | Out-Null
+          $msixFiles = Get-ChildItem -Path $msixDir -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -match '\.(msix|msixbundle|appinstaller)$' }
+          foreach ($f in $msixFiles) {
+            $hash = (Get-FileHash -Algorithm SHA256 $f.FullName).Hash.ToLowerInvariant()
+            $rel = "msix/" + $f.FullName.Substring((Resolve-Path $msixDir).Path.Length).TrimStart('\','/')
+            $lines += "$hash  $rel"
+          }
+
+          $setupFiles = Get-ChildItem -Path "artifacts/installer" -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "Orbit-Setup-*.exe" -and $_.Extension -eq ".exe" }
+          foreach ($f in $setupFiles) {
+            $hash = (Get-FileHash -Algorithm SHA256 $f.FullName).Hash.ToLowerInvariant()
+            $lines += "$hash  installer/$($f.Name)"
+          }
+
+          if ($lines.Count -eq 0) {
+            throw "No package artifacts found. Installer pack must succeed before publishing a release."
+          }
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $lines | Set-Content -Encoding utf8 "artifacts/SHA256SUMS.txt"
+          if (Test-Path $msixDir) {
+            $lines | Set-Content -Encoding utf8 (Join-Path $msixDir "SHA256SUMS.txt")
+          }
+
+      - name: Verify setup installer exists
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_pack != 'true' }}
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem -Path "artifacts/installer" -Filter "Orbit-Setup-*.exe" -File -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if (-not $setup) {
+            throw "Missing artifacts/installer/Orbit-Setup-*.exe — in-app updater requires this asset."
+          }
+          Write-Host "Will publish: $($setup.Name)"
+
+      - name: Create GitHub Release
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.skip_pack != 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: Orbit ${{ steps.ver.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          draft: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.draft == 'true' }}
+          generate_release_notes: true
+          files: |
+            artifacts/SHA256SUMS.txt
+            artifacts/msix/**
+            artifacts/installer/Orbit-Setup-*.exe
+            artifacts/installer/Orbit-Setup-*.exe.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

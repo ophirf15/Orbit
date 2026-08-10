@@ -1,0 +1,19 @@
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Orbit.Core\Orbit.Core.csproj" />
+    <ProjectReference Include="..\Orbit.Infrastructure\Orbit.Infrastructure.csproj" />
+    <ProjectReference Include="..\Orbit.Agent.Contracts\Orbit.Agent.Contracts.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Console worker Host — not a WinUI app -->
+    <RootNamespace>Orbit.Core.Host</RootNamespace>
+    <AssemblyName>Orbit.Core.Host</AssemblyName>
+  </PropertyGroup>
+
+</Project>

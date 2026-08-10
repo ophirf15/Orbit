@@ -1,0 +1,22 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Orbit//Phase12 Fixture//EN
+CALSCALE:GREGORIAN
+BEGIN:VEVENT
+UID:orbit-harbor-court-survey-001@fixture
+DTSTART:20260808T170000Z
+DTEND:20260808T180000Z
+SUMMARY:Harbor Court MetroFiber site survey
+DESCRIPTION:Discuss Harbor Court internet install and HOA permit.
+LOCATION:Harbor Court property
+ORGANIZER:mailto:pm@example.com
+END:VEVENT
+BEGIN:VEVENT
+UID:orbit-unrelated-001@fixture
+DTSTART:20260810T150000Z
+DTEND:20260810T160000Z
+SUMMARY:Team standup
+DESCRIPTION:No project names here.
+LOCATION:Zoom
+END:VEVENT
+END:VCALENDAR

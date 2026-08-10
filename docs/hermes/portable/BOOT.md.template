@@ -1,0 +1,35 @@
+# BOOT — gateway-start recovery (ADR 0028)
+
+Hermes reads this once when the gateway starts. It is **not** a scheduler —
+routines live in `cron/jobs.json` (see `docs/hermes/portable/cron/jobs.manifest.json`).
+Keep this bounded: one health check, one catch-up, then stop.
+
+## 1. MCP health
+
+Call `orbit_get_workbench` (no args) once. If it fails or times out:
+
+- Say once that Orbit MCP is unreachable and why (auth, URL, or Core Host down).
+- Do not retry in a loop or re-check on every subsequent message.
+
+## 2. One bounded catch-up
+
+If MCP is healthy, make a single best-effort pass to see what changed while the
+gateway was down:
+
+- Prefer `orbit_get_related_context` / `orbit_search` scoped to anything with a
+  known cursor or timestamp; do not replay full history.
+- If there is nothing stale or no signal to check, skip this step silently.
+
+## 3. Stay quiet
+
+- No persona restatement — identity lives in `SOUL.md`.
+- No standing-rules or memory dump — pull those via Orbit tools only if a task
+  needs them.
+- Send an unsolicited message only if step 1 or step 2 found something the
+  operator needs to know; otherwise do nothing.
+
+## 4. Cron stays out of this file
+
+Do not create or edit cron jobs from a BOOT session. Cron provisioning is
+manifest-driven (`hermes cron create/edit` from `jobs.manifest.json` via
+Orbit Connect) so a fresh install stays reproducible without hand edits here.

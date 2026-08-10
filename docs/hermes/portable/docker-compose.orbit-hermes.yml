@@ -1,0 +1,22 @@
+# Template / manual local Hermes gateway beside Orbit.
+# Prefer Orbit Settings → Prepare local Hermes folder (ADR 0022) when using the app.
+# Inspect upstream env vars before production use:
+# https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/docker.md
+
+services:
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    restart: unless-stopped
+    ports:
+      - "8642:8642"
+    volumes:
+      - ./hermes-data:/opt/data
+      # Optional: mount published Orbit.Mcp for stdio MCP from inside the container
+      # - /opt/orbit-mcp:/opt/orbit-mcp:ro
+    environment:
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: "0.0.0.0"
+      API_SERVER_KEY: "${API_SERVER_KEY}"
+      # If MCP runs in-container against Core on the Windows host:
+      # ORBIT_CORE_URL: "http://host.docker.internal:8741"
+      # ORBIT_API_KEY: "${ORBIT_API_KEY}"

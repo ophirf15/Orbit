@@ -1,0 +1,37 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.2" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\fixtures\sample.msg" Link="fixtures\sample.msg" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Calendar\Fixtures\*.ics" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Orbit.Core\Orbit.Core.csproj" />
+    <ProjectReference Include="..\..\src\Orbit.Infrastructure\Orbit.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Orbit.Mcp\Orbit.Mcp.csproj" />
+    <ProjectReference Include="..\..\src\Orbit.Core.Host\Orbit.Core.Host.csproj" />
+  </ItemGroup>
+
+</Project>

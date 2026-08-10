@@ -1,0 +1,232 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="Orbit_App.Views.WorkbenchPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Orbit_App.Controls"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:vm="using:Orbit_App.ViewModels"
+    mc:Ignorable="d">
+
+    <Grid Background="{ThemeResource OrbitWorkbenchSurfaceBrush}">
+        <Grid
+            x:Name="WorkbenchRoot"
+            AllowDrop="True"
+            Background="Transparent"
+            DragOver="WorkbenchRoot_DragOver"
+            Drop="WorkbenchRoot_Drop"
+            Padding="16,8,16,12"
+            RowSpacing="10">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <Grid RowSpacing="2">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Grid>
+                    <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                        <controls:OrbitMark MarkSize="28" />
+                        <TextBlock
+                            x:Name="WorkbenchTitle"
+                            VerticalAlignment="Center"
+                            Style="{StaticResource SubtitleTextBlockStyle}"
+                            Text="Orbit" />
+                        <TextBlock x:Name="WorkbenchSubtitle" Visibility="Collapsed" />
+                        <TextBlock
+                            x:Name="WorkbenchHint"
+                            MaxWidth="360"
+                            Opacity="0.7"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            TextTrimming="CharacterEllipsis"
+                            VerticalAlignment="Center" />
+                    </StackPanel>
+                    <StackPanel
+                        HorizontalAlignment="Right"
+                        Orientation="Horizontal"
+                        Spacing="8"
+                        VerticalAlignment="Center">
+                        <Button
+                            x:Name="AddTaskButton"
+                            Click="AddTask_Click"
+                            Content="Add task"
+                            IsEnabled="False" />
+                        <Button
+                            x:Name="AddSubtaskButton"
+                            Click="AddSubtask_Click"
+                            Content="Add subtask"
+                            IsEnabled="False" />
+                        <Button
+                            x:Name="PushOutlookButton"
+                            AutomationProperties.Name="Push selected Outlook mail"
+                            Click="PushOutlook_Click"
+                            Content="Push Outlook mail"
+                            Style="{StaticResource AccentButtonStyle}"
+                            ToolTipService.ToolTip="Ctrl+Shift+O — select mail in Outlook first" />
+                    </StackPanel>
+                </Grid>
+                <!-- Combined status; AgentStatusText / UpcomingMeetingsText kept for code-behind setters -->
+                <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="0">
+                    <TextBlock
+                        x:Name="AgentStatusText"
+                        AutomationProperties.Name="Agent status"
+                        Opacity="0.55"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        TextTrimming="CharacterEllipsis"
+                        MaxWidth="280" />
+                    <TextBlock
+                        x:Name="StatusSep"
+                        Opacity="0.4"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Text="  ·  "
+                        Visibility="Collapsed" />
+                    <TextBlock
+                        x:Name="UpcomingMeetingsText"
+                        AutomationProperties.Name="Upcoming meetings"
+                        Opacity="0.55"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        TextTrimming="CharacterEllipsis"
+                        MaxWidth="420" />
+                </StackPanel>
+            </Grid>
+
+            <controls:HermesHomeStrip
+                x:Name="HermesStrip"
+                Grid.Row="1"
+                ConcernClicked="HermesStrip_ConcernClicked"
+                RefreshRequested="HermesStrip_RefreshRequested" />
+
+            <Grid x:Name="WorkbenchBody" Grid.Row="2" ColumnSpacing="12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="0.38*" MinWidth="260" />
+                    <ColumnDefinition Width="0.62*" MinWidth="360" />
+                </Grid.ColumnDefinitions>
+
+                <Border
+                    Padding="10"
+                    Background="{ThemeResource OrbitDetailSurfaceBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="{StaticResource ControlCornerRadius}">
+                    <Grid RowSpacing="8">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                        <TextBlock
+                            FontWeight="SemiBold"
+                            Opacity="0.85"
+                            Text="Work" />
+                        <TreeView
+                            x:Name="OrbitTree"
+                            Grid.Row="1"
+                            AllowDrop="True"
+                            AutomationProperties.Name="Orbit work tree"
+                            CanDragItems="True"
+                            CanReorderItems="False"
+                            ContextRequested="OrbitTree_ContextRequested"
+                            DragItemsCompleted="OrbitTree_DragItemsCompleted"
+                            DragItemsStarting="OrbitTree_DragItemsStarting"
+                            DragOver="OrbitTree_DragOver"
+                            Drop="OrbitTree_Drop"
+                            ItemInvoked="OrbitTree_ItemInvoked"
+                            SelectionMode="Single">
+                            <TreeView.ItemTemplate>
+                                <DataTemplate x:DataType="vm:OrbitTreeNodeVm">
+                                    <TreeViewItem
+                                        IsExpanded="True"
+                                        ItemsSource="{x:Bind Children}"
+                                        CollapsedGlyph="&#xE76C;"
+                                        ExpandedGlyph="&#xE70D;"
+                                        ContextRequested="OrbitTreeItem_ContextRequested">
+                                        <StackPanel Orientation="Horizontal" Spacing="8">
+                                            <FontIcon FontSize="12" Glyph="{x:Bind Glyph}" Opacity="0.75" />
+                                            <StackPanel Spacing="1">
+                                                <TextBlock
+                                                    FontWeight="SemiBold"
+                                                    Text="{x:Bind Title}"
+                                                    TextTrimming="CharacterEllipsis" />
+                                                <TextBlock
+                                                    Opacity="0.65"
+                                                    Style="{StaticResource CaptionTextBlockStyle}"
+                                                    Text="{x:Bind Subtitle}"
+                                                    TextTrimming="CharacterEllipsis" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </TreeViewItem>
+                                </DataTemplate>
+                            </TreeView.ItemTemplate>
+                        </TreeView>
+                        <TextBox
+                            x:Name="AgentInputBox"
+                            Grid.Row="2"
+                            AcceptsReturn="False"
+                            AutomationProperties.Name="Quick capture"
+                            CornerRadius="10"
+                            KeyDown="AgentInputBox_KeyDown"
+                            PlaceholderText="Capture here · ? ask Hermes · new project …"
+                            MinHeight="40" />
+                        <TextBlock
+                            x:Name="AgentQuickReply"
+                            Grid.Row="3"
+                            MaxHeight="96"
+                            FontSize="12"
+                            Opacity="0.85"
+                            TextWrapping="Wrap"
+                            TextTrimming="CharacterEllipsis"
+                            IsTextSelectionEnabled="True"
+                            Visibility="Collapsed" />
+                        <!-- Hidden legacy hooks kept for code that still references them -->
+                        <ComboBox x:Name="CellSizeCombo" Visibility="Collapsed" SelectionChanged="CellSizeCombo_SelectionChanged">
+                            <ComboBoxItem Content="Compact" Tag="0" />
+                            <ComboBoxItem Content="Comfortable" Tag="1" />
+                            <ComboBoxItem Content="Large" Tag="2" />
+                        </ComboBox>
+                        <ScrollViewer x:Name="CellScroller" Visibility="Collapsed" SizeChanged="CellScroller_SizeChanged">
+                            <Canvas x:Name="CellBoard" />
+                        </ScrollViewer>
+                        <ListView x:Name="AgentMessageList" Visibility="Collapsed" />
+                        <Button x:Name="AgentSendButton" Visibility="Collapsed" Click="AgentSendButton_Click" />
+                        <TextBlock x:Name="AgentRailStatus" Visibility="Collapsed" />
+                        <TextBlock x:Name="AgentRailHint" Visibility="Collapsed" />
+                        <Border x:Name="AgentRail" Visibility="Collapsed" />
+                        <Border x:Name="DrawerHost" Visibility="Collapsed">
+                            <StackPanel>
+                                <TextBlock x:Name="DrawerTitle" />
+                                <StackPanel x:Name="DrawerBody" />
+                            </StackPanel>
+                        </Border>
+                        <Button x:Name="BackToRootButton" Visibility="Collapsed" Click="BackToRoot_Click" />
+                    </Grid>
+                </Border>
+
+                <Border
+                    Grid.Column="1"
+                    Background="{ThemeResource OrbitDetailSurfaceBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="{StaticResource ControlCornerRadius}">
+                    <Grid>
+                        <TextBlock
+                            x:Name="DetailEmptyText"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            Opacity="0.6"
+                            Text="Select a project or task"
+                            Style="{StaticResource BodyTextBlockStyle}" />
+                        <ContentPresenter x:Name="DetailHost" Visibility="Collapsed" />
+                    </Grid>
+                </Border>
+            </Grid>
+        </Grid>
+
+        <Frame x:Name="DetailFrame" Visibility="Collapsed" />
+    </Grid>
+</Page>

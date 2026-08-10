@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Application
+    x:Class="Orbit_App.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:Orbit_App">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+                <ResourceDictionary Source="ms-appx:///Themes/OrbitBrushes.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+
+            <!-- Softer, modern control geometry app-wide -->
+            <CornerRadius x:Key="ControlCornerRadius">10</CornerRadius>
+            <CornerRadius x:Key="OverlayCornerRadius">12</CornerRadius>
+            <CornerRadius x:Key="TextControlCornerRadius">10</CornerRadius>
+
+            <Style TargetType="TextBox" BasedOn="{StaticResource DefaultTextBoxStyle}">
+                <Setter Property="CornerRadius" Value="10" />
+                <Setter Property="Padding" Value="12,8" />
+            </Style>
+            <Style TargetType="PasswordBox" BasedOn="{StaticResource DefaultPasswordBoxStyle}">
+                <Setter Property="CornerRadius" Value="10" />
+            </Style>
+            <Style TargetType="ComboBox" BasedOn="{StaticResource DefaultComboBoxStyle}">
+                <Setter Property="CornerRadius" Value="10" />
+            </Style>
+            <Style TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+                <Setter Property="CornerRadius" Value="10" />
+                <Setter Property="Padding" Value="14,8" />
+            </Style>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

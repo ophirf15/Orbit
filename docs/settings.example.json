@@ -1,0 +1,15 @@
+{
+  "localDataRoot": "%LocalAppData%/Orbit/data",
+  "generatedFilesRoot": "%LocalAppData%/Orbit/generated",
+  "oneDriveSnapshotFolder": null,
+  "deviceId": "(generated-once-guid)",
+  "deviceName": "(machine-name)",
+  "hermesBaseUrl": "http://127.0.0.1:8642",
+  "hermesApiKeyReference": "%LocalAppData%/Orbit/hermes-api-key.txt",
+  "coreHostBaseUrl": "http://127.0.0.1:8741",
+  "coreHostBindAddress": "127.0.0.1",
+  "coreHostApiKeyReference": "%LocalAppData%/Orbit/core-host-api-key.txt",
+  "themePreference": "system",
+  "backgroundHostEnabled": true,
+  "developerMode": false
+}

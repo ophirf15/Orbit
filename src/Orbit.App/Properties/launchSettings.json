@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "Orbit.App (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "Orbit.App (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "$schema": "orbit-hermes-jobs-manifest/v1",
+  "version": 1,
+  "note": "Environment-neutral cron manifest (ADR 0028). No chat IDs, tokens, or absolute Dev-PC paths. HermesHomeProvisioner materializes this into <HERMES_HOME>/cron/jobs.json idempotently by logical `name`.",
+  "jobs": [
+    {
+      "name": "orbit-duty-scan-morning",
+      "schedule": "30 7 * * *",
+      "skills": ["duty-scan"],
+      "prompt": "Run the Orbit morning duty scan (see duty-scan skill). Pull calendar window, open blockers, and stalled waiting tasks via Orbit MCP tools. Rank next steps with evidence. Reply [SILENT] if nothing material changed since the last scan.",
+      "deliver": "local"
+    },
+    {
+      "name": "orbit-duty-scan-evening",
+      "schedule": "0 18 * * *",
+      "skills": ["duty-scan"],
+      "prompt": "Run the Orbit evening duty scan (see duty-scan skill). Recap the day: blockers cleared/opened, waiting tasks needing a chase, tomorrow's calendar. Reply [SILENT] if nothing material changed since the morning scan.",
+      "deliver": "local"
+    },
+    {
+      "name": "orbit-pulse-monitor",
+      "schedule": "*/10 * * * *",
+      "skills": ["pulse-refresh"],
+      "prompt": "The attached script output is the current Orbit Pulse snapshot. It only reaches you when it changed since the last tick. Rebuild awareness (see pulse-refresh skill): ensure active concerns have a brief + next action, then reply with a short ranked briefing, or [SILENT] if nothing needs the operator's attention.",
+      "monitor_script": "orbit-pulse-monitor.py",
+      "deliver": "local"
+    },
+    {
+      "name": "orbit-chase-waiting",
+      "schedule": "0 11 * * 1-5",
+      "skills": ["chase-waiting"],
+      "prompt": "Run the Orbit chase-waiting skill. List blocked/waiting tasks via Orbit MCP, identify stale dependencies, and update nextAction / brief with a concrete chase step — do not spam-send email. Reply [SILENT] if nothing is stale.",
+      "deliver": "local"
+    }
+  ]
+}

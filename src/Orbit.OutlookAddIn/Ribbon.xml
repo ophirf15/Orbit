@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<customUI xmlns="http://schemas.microsoft.com/office/2009/07/customui" onLoad="Ribbon_Load">
+  <ribbon>
+    <tabs>
+      <tab id="OrbitTab" label="Orbit">
+        <group id="OrbitGroup" label="Orbit">
+          <button
+            id="AddToOrbitButton"
+            label="Add to Orbit"
+            size="large"
+            screentip="Push selected Outlook mail into Orbit"
+            onAction="OnAddToOrbit" />
+          <button
+            id="AddToProjectButton"
+            label="Add to project…"
+            size="large"
+            screentip="Push selected mail and link to an Orbit project"
+            onAction="OnAddToProject" />
+        </group>
+      </tab>
+    </tabs>
+  </ribbon>
+</customUI>

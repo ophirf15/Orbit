@@ -1,0 +1,57 @@
+# Merge under mcp_servers: in ~/.hermes/config.yaml
+# Server key "orbit" → Hermes tool names mcp_orbit_orbit_search, etc. (single underscores).
+# Adjust command/args to the published Orbit.Mcp path on this host.
+# Docs: https://hermes-agent.nousresearch.com/docs/reference/mcp-config-reference
+
+mcp_servers:
+  orbit:
+    # Windows (framework-dependent example after publish):
+    # command: "dotnet"
+    # args: ["C:/Users/YOU/AppData/Local/Orbit/orbit-mcp/Orbit.Mcp.dll"]
+    # Linux self-contained:
+    command: "/opt/orbit-mcp/Orbit.Mcp"
+    args: []
+    env:
+      ORBIT_CORE_URL: "${ORBIT_CORE_URL}"
+      ORBIT_API_KEY: "${ORBIT_API_KEY}"
+    enabled: true
+    timeout: 120
+    connect_timeout: 60
+    tools:
+      include:
+        - orbit_get_related_context
+        - orbit_get_workbench
+        - orbit_search
+        - orbit_get_project
+        - orbit_update_project
+        - orbit_get_contact
+        - orbit_list_contacts
+        - orbit_update_contact
+        - orbit_archive_contact
+        - orbit_flag_resident
+        - orbit_create_task
+        - orbit_update_task
+        - orbit_create_note
+        - orbit_archive_entity
+        - orbit_link_tasks
+        - orbit_unlink_tasks
+        - orbit_get_task_dependencies
+        - orbit_suggest_task_links
+        - orbit_accept_suggestion
+        - orbit_reject_suggestion
+        - orbit_remember
+        - orbit_forget
+        - orbit_list_rules
+        - orbit_set_rule
+        - orbit_list_memory
+        - orbit_report_briefing
+        - orbit_link_email_thread
+        - orbit_list_task_emails
+        - orbit_open_email
+        - orbit_get_changes
+        - orbit_get_pulse_delta
+        - orbit_list_blocked_tasks
+        - orbit_get_agent_snapshot
+        - orbit_health
+      resources: false
+      prompts: false

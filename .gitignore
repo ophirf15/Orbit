@@ -1,0 +1,86 @@
+## Build
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+*.DotSettings.user
+
+## NuGet
+*.nupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+## Test / coverage
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+*.trx
+*.coverage
+*.coveragexml
+coverage*/
+
+## Publish / packaging
+AppPackages/
+BundleArtifacts/
+Package.StoreAssociation.xml
+*_TemporaryKey.pfx
+*.appx
+*.msix
+*.msixbundle
+
+## OS / IDE
+Thumbs.db
+Desktop.ini
+.idea/
+*.swp
+*~
+
+## Orbit local secrets and settings (never commit)
+**/settings.json
+**/hermes-api-key.txt
+**/secrets/
+.env
+.env.*
+!.env.example
+
+## LocalAppData copies accidentally dropped in tree
+.local-orbit/
+
+## Local databases / operator data (never commit)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+## Personal / private planning (operator story, phase plans, local checklists)
+docs/plans/
+docs/product/
+docs/TODO.md
+docs/foundation-harvest.md
+STRATEGY.md
+docs/hermes/consult-*.md
+docs/hermes/deploy-spike*.md
+docs/hermes/monday-work-pc-checklist.md
+docs/hermes/rewrite-status.md
+Orbit_Cursor_Build_Pack/
+
+## Cursor / tooling
+.cursor/
+*.rsuser
+
+## Vendored reference clones (do not commit)
+vendor/hermes-agent/
+
+
+## Archives of private planning packs
+Orbit_Cursor_Build_Pack.zip
+*.zip
+

@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="Orbit_App.Views.FilesPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Orbit_App.Controls"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Grid Padding="16,8,16,12" RowSpacing="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Orientation="Horizontal" Spacing="8">
+            <FontIcon Glyph="&#xE8B7;" FontSize="18" VerticalAlignment="Center" />
+            <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="Files" VerticalAlignment="Center" />
+        </StackPanel>
+
+        <Grid Grid.Row="1" ColumnSpacing="8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <ComboBox
+                x:Name="ProjectCombo"
+                HorizontalAlignment="Stretch"
+                AutomationProperties.Name="Project"
+                DisplayMemberPath="Name"
+                PlaceholderText="Select project"
+                SelectionChanged="ProjectCombo_SelectionChanged" />
+            <Button
+                Grid.Column="1"
+                AutomationProperties.Name="Attach folder"
+                Click="AttachFolder_Click"
+                Content="Attach folder" />
+            <Button
+                Grid.Column="2"
+                AutomationProperties.Name="Reindex folders"
+                Click="Reindex_Click"
+                Content="Reindex" />
+        </Grid>
+
+        <StackPanel Grid.Row="2" Spacing="6">
+            <TextBlock
+                x:Name="FoldersText"
+                Opacity="0.75"
+                Style="{StaticResource CaptionTextBlockStyle}"
+                Text="No folders attached." />
+            <Grid ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBox
+                    x:Name="SearchBox"
+                    AutomationProperties.Name="File search"
+                    KeyDown="SearchBox_KeyDown"
+                    PlaceholderText="Filter indexed files (empty = show all)…" />
+                <Button
+                    Grid.Column="1"
+                    AutomationProperties.Name="Search files"
+                    Click="Search_Click"
+                    Content="Search" />
+            </Grid>
+        </StackPanel>
+
+        <Grid Grid.Row="3" ColumnSpacing="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="1.1*" />
+            </Grid.ColumnDefinitions>
+
+            <ListView
+                x:Name="ResultsList"
+                AutomationProperties.Name="Search results"
+                IsItemClickEnabled="True"
+                ItemClick="ResultsList_ItemClick"
+                SelectionMode="Single">
+                <ListView.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Padding="4,6" Spacing="2">
+                            <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="{Binding DisplayName}" />
+                            <TextBlock
+                                Opacity="0.7"
+                                Style="{StaticResource CaptionTextBlockStyle}"
+                                Text="{Binding Path}"
+                                TextWrapping="NoWrap" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+
+            <Border
+                Grid.Column="1"
+                Padding="12"
+                Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="{StaticResource ControlCornerRadius}">
+                <Grid RowSpacing="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <TextBlock
+                        x:Name="PreviewTitle"
+                        Style="{StaticResource BodyStrongTextBlockStyle}"
+                        Text="Preview" />
+                    <controls:FilePreviewControl
+                        x:Name="PreviewHost"
+                        Grid.Row="1" />
+                    <Button
+                        x:Name="OpenButton"
+                        Grid.Row="2"
+                        HorizontalAlignment="Left"
+                        Click="OpenExternal_Click"
+                        Content="Open externally"
+                        IsEnabled="False" />
+                </Grid>
+            </Border>
+        </Grid>
+
+        <TextBlock
+            x:Name="StatusText"
+            Grid.Row="4"
+            Opacity="0.7"
+            Style="{StaticResource CaptionTextBlockStyle}"
+            Text="External folders are read-only. Generated output is separate." />
+    </Grid>
+</Page>

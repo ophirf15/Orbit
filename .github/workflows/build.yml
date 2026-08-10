@@ -1,0 +1,30 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Build solution
+        shell: pwsh
+        run: |
+          # Prefer Program Files x64 SDK if x86 host is on PATH
+          $env:PATH = "C:\Program Files\dotnet;" + $env:PATH
+          ./build.ps1 -Configuration Release
+
+      - name: Unit + integration tests
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Program Files\dotnet;" + $env:PATH
+          ./build.ps1 -Configuration Release -Test -NoRestore
+        continue-on-error: false

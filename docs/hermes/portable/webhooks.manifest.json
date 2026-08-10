@@ -1,0 +1,15 @@
+{
+  "$schema": "orbit-hermes-webhooks-manifest/v1",
+  "version": 1,
+  "note": "Environment-neutral webhook route stubs (ADR 0028, plan unit U5). No secrets — `secret_env` names an env var the operator fills on the Hermes host. Merge routes under platforms.webhook.extra.routes in Hermes config.yaml; not auto-merged by the provisioner today.",
+  "routes": [
+    {
+      "name": "orbit-email-ingested",
+      "events": ["email.ingested"],
+      "secret_env": "ORBIT_HERMES_WEBHOOK_SECRET",
+      "script": "orbit-event-filter.py",
+      "prompt": "Orbit ingested new email (eventId {eventId}, emailId {emailId}). (1) Contact-enrich: for each material person, set category company|client|vendor OR flag/exclude residents; when a signature/body shows a phone, you MUST call orbit_update_contact with patch.mobile or patch.phone (and title/org when clear). Institutional/campus brands: ownership vs resident — never domain-alone. (2) Work impact: orbit_search / orbit_get_related_context / orbit_open_email; act only if material. (3) Always finish by calling orbit_report_briefing with a short summary, or briefing=\"[SILENT]\" if nothing to surface — that clears the Orbit push banner.",
+      "deliver": "local"
+    }
+  ]
+}

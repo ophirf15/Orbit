@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Orbit App Installer descriptor template (Phase 17 — MSIX primary lane).
+
+  Placeholders (replace per release / fork):
+    {MAIN_PACKAGE_URI}     — HTTPS URL to the .msix / .msixbundle on GitHub Releases
+    {APPINSTALLER_URI}     — Stable HTTPS URL to this .appinstaller file
+    {VERSION}              — Package version, four-part (e.g. 0.1.0.0); must match Identity Version
+    {PACKAGE_NAME}         — Same as Package.appxmanifest Identity Name
+    {PUBLISHER}            — Same as Package.appxmanifest Identity Publisher (CN=…)
+
+  See docs/release.md and packaging/PackageIdentity.md.
+-->
+<AppInstaller
+  xmlns="http://schemas.microsoft.com/appx/appinstaller/2018"
+  Version="{VERSION}"
+  Uri="{APPINSTALLER_URI}">
+
+  <MainPackage
+    Name="{PACKAGE_NAME}"
+    Publisher="{PUBLISHER}"
+    Version="{VERSION}"
+    Uri="{MAIN_PACKAGE_URI}"
+    ProcessorArchitecture="x64" />
+
+  <UpdateSettings>
+    <OnLaunch HoursBetweenUpdateChecks="24" />
+    <AutomaticBackgroundTask />
+  </UpdateSettings>
+</AppInstaller>

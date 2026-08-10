@@ -1,0 +1,244 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="Orbit_App.Views.AgentChatPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Grid Padding="16,8,16,12" ColumnSpacing="16" RowSpacing="8">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="320" />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <StackPanel Orientation="Horizontal" Spacing="10">
+            <Image
+                Width="36"
+                Height="36"
+                Source="ms-appx:///Assets/Brand/orbit-64.png"
+                Stretch="Uniform"
+                VerticalAlignment="Center" />
+            <TextBlock
+                Style="{StaticResource TitleTextBlockStyle}"
+                Text="Agent"
+                VerticalAlignment="Center" />
+            <Button
+                Margin="12,0,0,0"
+                VerticalAlignment="Center"
+                Click="OpenHermesDashboard_Click"
+                Content="Hermes dashboard"
+                Style="{StaticResource AccentButtonStyle}" />
+        </StackPanel>
+
+        <TextBlock
+            x:Name="SessionStatusText"
+            Grid.Row="1"
+            Opacity="0.8"
+            Style="{StaticResource CaptionTextBlockStyle}"
+            Text="Hermes session: starting…"
+            TextWrapping="Wrap" />
+
+        <ListView
+            x:Name="MessageList"
+            Grid.Row="2"
+            AutomationProperties.Name="Agent messages"
+            SelectionMode="None">
+            <ListView.ItemTemplate>
+                <DataTemplate>
+                    <StackPanel Padding="4,8" Spacing="2">
+                        <TextBlock
+                            Opacity="0.7"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            Text="{Binding RoleLabel}" />
+                        <TextBlock
+                            IsTextSelectionEnabled="True"
+                            Style="{StaticResource BodyTextBlockStyle}"
+                            Text="{Binding Text}"
+                            TextWrapping="WrapWholeWords" />
+                    </StackPanel>
+                </DataTemplate>
+            </ListView.ItemTemplate>
+        </ListView>
+
+        <TextBox
+            x:Name="InputBox"
+            Grid.Row="3"
+            AcceptsReturn="True"
+            AutomationProperties.Name="Agent message"
+            Header="Message"
+            PlaceholderText="Ask Hermes…"
+            TextWrapping="Wrap"
+            MinHeight="72" />
+
+        <StackPanel
+            Grid.Row="4"
+            Orientation="Horizontal"
+            Spacing="8">
+            <Button
+                x:Name="SendButton"
+                AutomationProperties.Name="Send agent message"
+                Click="SendButton_Click"
+                Content="Send"
+                Style="{StaticResource AccentButtonStyle}" />
+            <Button
+                x:Name="ProbeButton"
+                AutomationProperties.Name="What can you see right now"
+                Click="ProbeButton_Click"
+                Content="What can you see right now?" />
+            <TextBlock
+                x:Name="StatusText"
+                VerticalAlignment="Center"
+                Opacity="0.8"
+                TextWrapping="Wrap" />
+        </StackPanel>
+
+        <ScrollViewer Grid.Row="0" Grid.RowSpan="5" Grid.Column="1">
+            <StackPanel Spacing="12">
+                <Border
+                    Padding="12"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                    <StackPanel Spacing="8">
+                        <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="Duty (Workbench owns this)" />
+                        <TextBlock
+                            x:Name="OperatorStatusText"
+                            Opacity="0.75"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            Text="Push mail from the Workbench (Ctrl+Shift+O). This rail is diagnostics only — not your daily path."
+                            TextWrapping="Wrap" />
+                        <TextBlock
+                            x:Name="BriefingText"
+                            IsTextSelectionEnabled="True"
+                            Style="{StaticResource BodyTextBlockStyle}"
+                            Text="Stay on the Workbench. Results appear in the top banner."
+                            TextWrapping="WrapWholeWords" />
+                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Pending merges only (rare)" />
+                        <ListView
+                            x:Name="OperatorSuggestionList"
+                            MaxHeight="180"
+                            AutomationProperties.Name="Operator pending suggestions"
+                            SelectionMode="None">
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Padding="0,6" Spacing="4">
+                                        <TextBlock Text="{Binding Summary}" TextWrapping="WrapWholeWords" />
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <Button
+                                                Click="SuggestionAccept_Click"
+                                                Content="Accept"
+                                                Tag="{Binding Id}" />
+                                            <Button
+                                                Click="SuggestionAlways_Click"
+                                                Content="Always"
+                                                Tag="{Binding Id}" />
+                                            <Button
+                                                Click="SuggestionReject_Click"
+                                                Content="Reject"
+                                                Tag="{Binding Id}" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Standing rules" />
+                        <ListView
+                            x:Name="OperatorRuleList"
+                            MaxHeight="120"
+                            AutomationProperties.Name="Standing rules"
+                            SelectionMode="None">
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock
+                                        Padding="0,4"
+                                        Style="{StaticResource CaptionTextBlockStyle}"
+                                        Text="{Binding DisplayLine}"
+                                        TextWrapping="WrapWholeWords" />
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Memory" />
+                        <ListView
+                            x:Name="OperatorMemoryList"
+                            MaxHeight="120"
+                            AutomationProperties.Name="Operator memory"
+                            SelectionMode="None">
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock
+                                        Padding="0,4"
+                                        Style="{StaticResource CaptionTextBlockStyle}"
+                                        Text="{Binding DisplayLine}"
+                                        TextWrapping="WrapWholeWords" />
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                        <Button Content="Refresh operator" Click="RefreshOperator_Click" />
+                    </StackPanel>
+                </Border>
+
+                <Border
+                    Padding="12"
+                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                    <StackPanel Spacing="8">
+                        <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="Remote activity" />
+                        <TextBlock
+                            x:Name="RemoteStatusText"
+                            Opacity="0.75"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            Text="Telegram sessions via Hermes"
+                            TextWrapping="Wrap" />
+                        <ListView
+                            x:Name="RemoteSessionList"
+                            MaxHeight="140"
+                            AutomationProperties.Name="Remote Telegram sessions"
+                            SelectionMode="Single"
+                            SelectionChanged="RemoteSessionList_SelectionChanged">
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Padding="0,6" Spacing="2">
+                                        <TextBlock Text="{Binding Title}" TextWrapping="WrapWholeWords" />
+                                        <TextBlock
+                                            Opacity="0.7"
+                                            Style="{StaticResource CaptionTextBlockStyle}"
+                                            Text="{Binding SummaryLine}"
+                                            TextWrapping="WrapWholeWords" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="What changed" />
+                        <ListView
+                            x:Name="RemoteChangeList"
+                            MaxHeight="140"
+                            AutomationProperties.Name="Remote audited changes"
+                            SelectionMode="None">
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock
+                                        Padding="0,4"
+                                        Style="{StaticResource CaptionTextBlockStyle}"
+                                        Text="{Binding DetailLine}"
+                                        TextWrapping="WrapWholeWords" />
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</Page>

@@ -1,0 +1,282 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="Orbit_App.Views.PeoplePage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Grid Padding="16,8,16,12" ColumnSpacing="16" RowSpacing="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="1.15*" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <StackPanel Grid.ColumnSpan="2" Spacing="4">
+            <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="People" />
+            <TextBlock
+                Opacity="0.65"
+                Style="{StaticResource CaptionTextBlockStyle}"
+                Text="Company, clients, and vendors — residents are reviewed and excluded, not tracked." />
+        </StackPanel>
+
+        <StackPanel
+            Grid.Row="1"
+            Grid.ColumnSpan="2"
+            Orientation="Horizontal"
+            Spacing="8">
+            <ToggleButton
+                x:Name="FilterCompany"
+                Click="CategoryFilter_Click"
+                Content="Company"
+                CornerRadius="12"
+                Padding="12,6"
+                Tag="company" />
+            <ToggleButton
+                x:Name="FilterClients"
+                Click="CategoryFilter_Click"
+                Content="Clients"
+                CornerRadius="12"
+                Padding="12,6"
+                Tag="client" />
+            <ToggleButton
+                x:Name="FilterVendors"
+                Click="CategoryFilter_Click"
+                Content="Vendors"
+                CornerRadius="12"
+                Padding="12,6"
+                Tag="vendor" />
+            <ToggleButton
+                x:Name="FilterPending"
+                Click="CategoryFilter_Click"
+                Content="Pending"
+                CornerRadius="12"
+                Padding="12,6"
+                Tag="pending" />
+            <ToggleButton
+                x:Name="FilterReview"
+                Click="CategoryFilter_Click"
+                Content="Review"
+                CornerRadius="12"
+                Padding="12,6"
+                Tag="review" />
+            <ToggleButton
+                x:Name="SelectModeToggle"
+                Click="SelectMode_Click"
+                Content="Select"
+                CornerRadius="12"
+                Margin="12,0,0,0"
+                Padding="12,6" />
+        </StackPanel>
+
+        <StackPanel
+            x:Name="BulkBar"
+            Grid.Row="2"
+            Grid.ColumnSpan="2"
+            Orientation="Horizontal"
+            Spacing="8"
+            Visibility="Collapsed">
+            <TextBlock
+                x:Name="BulkCountText"
+                VerticalAlignment="Center"
+                Opacity="0.75"
+                Style="{StaticResource CaptionTextBlockStyle}"
+                Text="0 selected" />
+            <ComboBox
+                x:Name="BulkCategory"
+                Width="140"
+                PlaceholderText="Category"
+                CornerRadius="8">
+                <ComboBoxItem Content="Pending" Tag="" />
+                <ComboBoxItem Content="Company" Tag="company" />
+                <ComboBoxItem Content="Client" Tag="client" />
+                <ComboBoxItem Content="Vendor" Tag="vendor" />
+            </ComboBox>
+            <TextBox
+                x:Name="BulkOrganization"
+                Width="200"
+                PlaceholderText="Organization"
+                CornerRadius="8" />
+            <Button
+                Click="BulkApply_Click"
+                Content="Apply to selected"
+                CornerRadius="12"
+                Padding="12,6" />
+            <Button
+                Click="BulkClear_Click"
+                Content="Clear"
+                CornerRadius="12"
+                Padding="12,6" />
+        </StackPanel>
+
+        <Grid Grid.Row="3" Grid.ColumnSpan="2" ColumnSpacing="10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBox
+                x:Name="SearchBox"
+                AutomationProperties.Name="Search people or companies"
+                CornerRadius="12"
+                PlaceholderText="Search people, vendors, email…"
+                TextChanged="SearchBox_TextChanged"
+                KeyDown="SearchBox_KeyDown" />
+            <Button
+                x:Name="ClearFilterButton"
+                Grid.Column="1"
+                Click="ClearFilter_Click"
+                Content="All companies"
+                CornerRadius="12"
+                Padding="14,8"
+                Visibility="Collapsed" />
+        </Grid>
+
+        <ScrollViewer
+            Grid.Row="4"
+            VerticalScrollBarVisibility="Auto"
+            HorizontalScrollBarVisibility="Disabled">
+            <StackPanel x:Name="BrowseHost" Spacing="12" />
+        </ScrollViewer>
+
+        <Border
+            Grid.Row="4"
+            Grid.Column="1"
+            Padding="16"
+            Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+            BorderThickness="1"
+            CornerRadius="16">
+            <ScrollViewer>
+                <StackPanel Spacing="12">
+                    <StackPanel Spacing="4">
+                        <TextBlock
+                            x:Name="DetailName"
+                            Style="{StaticResource SubtitleTextBlockStyle}"
+                            Text="Select a person"
+                            TextWrapping="WrapWholeWords" />
+                        <TextBlock
+                            x:Name="DetailOrgTitle"
+                            Opacity="0.8"
+                            Style="{StaticResource BodyTextBlockStyle}"
+                            Text=""
+                            TextWrapping="WrapWholeWords" />
+                        <TextBlock
+                            x:Name="DetailMeta"
+                            Opacity="0.65"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            Text=""
+                            TextWrapping="WrapWholeWords" />
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button
+                            x:Name="EmailButton"
+                            AutomationProperties.Name="Email contact"
+                            Click="EmailButton_Click"
+                            Content="Email"
+                            CornerRadius="12"
+                            IsEnabled="False" />
+                        <Button
+                            x:Name="PhoneButton"
+                            AutomationProperties.Name="Call contact"
+                            Click="PhoneButton_Click"
+                            Content="Call"
+                            CornerRadius="12"
+                            IsEnabled="False" />
+                        <Button
+                            x:Name="DeleteButton"
+                            Click="DeleteButton_Click"
+                            Content="Remove"
+                            CornerRadius="12"
+                            IsEnabled="False" />
+                    </StackPanel>
+
+                    <StackPanel x:Name="EditHost" Spacing="8" Visibility="Collapsed">
+                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Edit" />
+                        <TextBox x:Name="EditDisplayName" Header="Name" CornerRadius="8" />
+                        <TextBox x:Name="EditTitle" Header="Title" CornerRadius="8" />
+                        <TextBox x:Name="EditOrganization" Header="Organization" CornerRadius="8" />
+                        <TextBox x:Name="EditMobile" Header="Mobile" CornerRadius="8" />
+                        <TextBox x:Name="EditEmail" Header="Email" CornerRadius="8" />
+                        <ComboBox
+                            x:Name="EditCategory"
+                            Header="Category"
+                            HorizontalAlignment="Stretch"
+                            CornerRadius="8">
+                            <ComboBoxItem Content="Pending" Tag="" />
+                            <ComboBoxItem Content="Company" Tag="company" />
+                            <ComboBoxItem Content="Client" Tag="client" />
+                            <ComboBoxItem Content="Vendor" Tag="vendor" />
+                        </ComboBox>
+                        <TextBlock
+                            x:Name="EditReportsTo"
+                            Opacity="0.75"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            Text=""
+                            TextWrapping="WrapWholeWords" />
+                        <Button
+                            x:Name="SaveButton"
+                            Click="SaveButton_Click"
+                            Content="Save"
+                            CornerRadius="12"
+                            HorizontalAlignment="Left" />
+                    </StackPanel>
+
+                    <StackPanel Spacing="4">
+                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Contact" />
+                        <TextBlock
+                            x:Name="MethodsText"
+                            IsTextSelectionEnabled="True"
+                            Style="{StaticResource BodyTextBlockStyle}"
+                            Text="—"
+                            TextWrapping="WrapWholeWords" />
+                    </StackPanel>
+
+                    <StackPanel Spacing="4">
+                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Projects" />
+                        <TextBlock
+                            x:Name="ProjectsText"
+                            Style="{StaticResource BodyTextBlockStyle}"
+                            Text="—"
+                            TextWrapping="WrapWholeWords" />
+                    </StackPanel>
+
+                    <StackPanel Spacing="4">
+                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Recent emails" />
+                        <TextBlock
+                            x:Name="EmailsText"
+                            Style="{StaticResource BodyTextBlockStyle}"
+                            Text="—"
+                            TextWrapping="WrapWholeWords" />
+                    </StackPanel>
+
+                    <StackPanel Spacing="4">
+                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Where this came from" />
+                        <TextBlock
+                            x:Name="ProvenanceText"
+                            IsTextSelectionEnabled="True"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            Text="—"
+                            TextWrapping="WrapWholeWords" />
+                    </StackPanel>
+                </StackPanel>
+            </ScrollViewer>
+        </Border>
+
+        <TextBlock
+            x:Name="StatusText"
+            Grid.Row="5"
+            Grid.ColumnSpan="2"
+            Opacity="0.7"
+            Style="{StaticResource CaptionTextBlockStyle}" />
+    </Grid>
+</Page>

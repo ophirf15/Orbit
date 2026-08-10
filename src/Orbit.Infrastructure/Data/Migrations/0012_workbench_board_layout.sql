@@ -1,0 +1,13 @@
+-- Freeform workbench placement (drag move / resize).
+
+ALTER TABLE projects ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE projects ADD COLUMN board_x REAL NULL;
+ALTER TABLE projects ADD COLUMN board_y REAL NULL;
+ALTER TABLE projects ADD COLUMN board_w REAL NULL;
+ALTER TABLE projects ADD COLUMN board_h REAL NULL;
+
+ALTER TABLE tasks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN board_x REAL NULL;
+ALTER TABLE tasks ADD COLUMN board_y REAL NULL;
+ALTER TABLE tasks ADD COLUMN board_w REAL NULL;
+ALTER TABLE tasks ADD COLUMN board_h REAL NULL;
