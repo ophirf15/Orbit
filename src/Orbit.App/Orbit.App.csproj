@@ -99,19 +99,20 @@
   <!--
     Stage thin Outlook launcher next to the app so Settings → Install works in
     local F5 builds (pack-installer.ps1 also publishes this folder for Setup).
+    Use a separate `dotnet build` process so Orbit.App's -r win-x64 does not
+    leak into the net48 project (NETSDK1047). Skip during pack publish —
+    pack-installer.ps1 stages outlook-launcher itself.
   -->
-  <Target Name="StageOutlookLauncher" AfterTargets="Build">
+  <Target Name="StageOutlookLauncher" AfterTargets="Build" Condition="'$(EnableStageOutlookLauncher)' != 'false'">
     <PropertyGroup>
       <_OutlookLauncherProj>$(MSBuildThisFileDirectory)..\Orbit.OutlookLauncher\Orbit.OutlookLauncher.csproj</_OutlookLauncherProj>
       <_OutlookLauncherOut Condition="Exists('$(MSBuildThisFileDirectory)..\Orbit.OutlookLauncher\bin\$(Platform)\$(Configuration)\net48\Orbit.OutlookLauncher.dll')">$(MSBuildThisFileDirectory)..\Orbit.OutlookLauncher\bin\$(Platform)\$(Configuration)\net48</_OutlookLauncherOut>
       <_OutlookLauncherOut Condition="'$(_OutlookLauncherOut)' == ''">$(MSBuildThisFileDirectory)..\Orbit.OutlookLauncher\bin\$(Configuration)\net48</_OutlookLauncherOut>
+      <_DotNetHost Condition="'$(DOTNET_HOST_PATH)' != ''">$(DOTNET_HOST_PATH)</_DotNetHost>
+      <_DotNetHost Condition="'$(_DotNetHost)' == ''">dotnet</_DotNetHost>
     </PropertyGroup>
-    <!-- Undefine RID: Orbit.App publish uses -r win-x64; net48 launcher has no RID graph. -->
-    <MSBuild
-      Projects="$(_OutlookLauncherProj)"
-      Targets="Build"
-      Properties="Configuration=$(Configuration);Platform=$(Platform)"
-      UndefineProperties="RuntimeIdentifier;RuntimeIdentifiers;SelfContained"
+    <Exec
+      Command="&quot;$(_DotNetHost)&quot; build &quot;$(_OutlookLauncherProj)&quot; -c $(Configuration) -p:Platform=$(Platform) --nologo -v:minimal"
       Condition="Exists('$(_OutlookLauncherProj)')" />
     <PropertyGroup>
       <_OutlookLauncherOut Condition="Exists('$(MSBuildThisFileDirectory)..\Orbit.OutlookLauncher\bin\$(Platform)\$(Configuration)\net48\Orbit.OutlookLauncher.dll')">$(MSBuildThisFileDirectory)..\Orbit.OutlookLauncher\bin\$(Platform)\$(Configuration)\net48</_OutlookLauncherOut>

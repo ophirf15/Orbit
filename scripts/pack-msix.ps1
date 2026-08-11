@@ -55,6 +55,7 @@ $publishArgs = @(
     "-p:GenerateAppxPackageOnBuild=true",
     "-p:AppxPackageDir=$OutputDir\",
     "-p:AppxBundle=Never",
+    "-p:EnableStageOutlookLauncher=false",
     "--self-contained", "true"
 )
 

@@ -125,6 +125,8 @@ if (-not $SkipPublish) {
         "-p:WindowsAppSDKSelfContained=true",
         "-p:PublishTrimmed=false",
         "-p:PublishReadyToRun=true",
+        # Launcher is published separately below; avoid net48 RID conflicts during App publish.
+        "-p:EnableStageOutlookLauncher=false",
         # Bake release version into assembly so in-app updater compares correctly.
         "-p:Version=$Version",
         "-p:InformationalVersion=$Version",
