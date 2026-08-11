@@ -141,7 +141,7 @@ public sealed class EmailIngestionService
         {
             foreach (var projectId in projectIds.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct(StringComparer.Ordinal))
             {
-                _store.LinkToProject(emailId, projectId);
+                _store.LinkToProject(emailId, projectId, confidence: 1.0, matchReason: "explicit");
             }
         }
 

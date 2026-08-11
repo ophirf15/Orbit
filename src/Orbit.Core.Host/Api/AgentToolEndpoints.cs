@@ -51,6 +51,11 @@ public static class AgentToolEndpoints
         app.MapPost(HostEndpoints.AgentToolUpdateTask, UpdateTask);
         app.MapPost(HostEndpoints.AgentToolCreateProject, CreateProject);
         app.MapPost(HostEndpoints.AgentToolUpdateProject, UpdateProject);
+        app.MapPost(HostEndpoints.AgentToolMergeProject, MergeProject);
+        app.MapPost(HostEndpoints.AgentToolAddProjectAlias, AddProjectAlias);
+        app.MapPost(HostEndpoints.AgentToolRemoveProjectAlias, RemoveProjectAlias);
+        app.MapGet(HostEndpoints.AgentToolListProjectAliases, ListProjectAliases);
+        app.MapPost(HostEndpoints.AgentToolListProjectAliases, ListProjectAliasesPost);
         app.MapPost(HostEndpoints.AgentToolCreateWorkstream, CreateWorkstream);
         app.MapGet(HostEndpoints.AgentToolListWorkstreams, ListWorkstreams);
         app.MapPost(HostEndpoints.AgentToolListWorkstreams, ListWorkstreamsPost);
@@ -135,7 +140,17 @@ public static class AgentToolEndpoints
         {
             tool = "orbit_get_project",
             requestId,
-            project,
+            project = new
+            {
+                project.Id,
+                project.Name,
+                project.Code,
+                project.Summary,
+                project.Status,
+                project.AccentColor,
+                dossier = project.Dossier is null ? null : WorkbenchEndpoints.MapDossier(project.Dossier),
+                dossierEmpty = project.DossierEmpty,
+            },
             workstreams,
             hierarchyHint = "Project → workstreams (sub-areas) → tasks. Use orbit_create_workstream for sub-areas; orbit_create_task with workstreamId to nest tasks.",
             context,
@@ -529,7 +544,10 @@ public static class AgentToolEndpoints
                 body.Body,
                 body.DueAt,
                 body.Priority,
-                body.Urgency);
+                body.Urgency,
+                body.ProjectId,
+                body.WorkstreamId,
+                clearWorkstream: body.ClearWorkstream == true);
             hub.Publish(new OrbitEvent { Type = "task.updated", Payload = new { taskId = result.Id, projectId = result.ProjectId } });
             return Results.Json(new { tool = "orbit_update_task", requestId, task = result });
         }
@@ -551,9 +569,44 @@ public static class AgentToolEndpoints
                     statusCode: StatusCodes.Status400BadRequest);
             }
 
+            var conflicts = projects.FindCreateConflicts(body.Name);
+            if (conflicts.Count > 0 && body.Force != true)
+            {
+                return Results.Json(
+                    new
+                    {
+                        tool = "orbit_create_project",
+                        requestId,
+                        error = new
+                        {
+                            code = ApiErrorCodes.Conflict,
+                            message = "A similar project already exists. Attach to an existing project or pass force=true after operator confirmation.",
+                        },
+                        candidates = conflicts.Select(c => new
+                        {
+                            projectId = c.ProjectId,
+                            name = c.Name,
+                            score = c.Score,
+                            reason = c.Reason,
+                        }),
+                    },
+                    statusCode: StatusCodes.Status409Conflict);
+            }
+
             // Hermes-created projects join the orbit home by default.
             var inOrbit = body.InOrbit ?? true;
-            var created = projects.Create(body.Name, body.Summary, inOrbit: inOrbit);
+            var created = projects.Create(body.Name, body.Summary, inOrbit: inOrbit, code: body.Code);
+            if (body.Aliases is { Length: > 0 })
+            {
+                foreach (var alias in body.Aliases)
+                {
+                    if (!string.IsNullOrWhiteSpace(alias))
+                    {
+                        projects.AddAlias(created.Id, alias);
+                    }
+                }
+            }
+
             hub.Publish(new OrbitEvent
             {
                 Type = "project.created",
@@ -569,12 +622,345 @@ public static class AgentToolEndpoints
                         id = created.Id,
                         name = created.Name,
                         summary = created.Summary,
+                        code = created.Code,
                         status = created.Status,
                         inOrbit,
                         createdAt = created.CreatedAt,
+                        aliases = projects.ListAliases(created.Id).Select(a => new { id = a.Id, alias = a.Alias }),
                     },
                 },
                 statusCode: StatusCodes.Status201Created);
+        }
+        catch (ArgumentException ex)
+        {
+            return MutationError(ex, requestId);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.Json(
+                ApiErrors.Create(ApiErrorCodes.Conflict, ex.Message, requestId),
+                statusCode: StatusCodes.Status409Conflict);
+        }
+    }
+
+    private static IResult UpdateProject(UpdateProjectToolBody? body, ProjectWriteStore projects, EventHub hub, HttpContext http)
+    {
+        var requestId = ApiKeyMiddleware.GetRequestId(http);
+        try
+        {
+            if (body is null || string.IsNullOrWhiteSpace(body.Id))
+            {
+                return Results.Json(
+                    ApiErrors.Create(ApiErrorCodes.BadRequest, "Body field 'id' is required.", requestId),
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            var touchAccent = body.AccentColor is not null;
+            var touchCode = body.Code is not null || body.ClearCode == true;
+            var addAliases = body.AddAliases ?? [];
+            var removeAliases = body.RemoveAliases ?? [];
+            var touchDossier = body.Dossier?.HasAnyField == true;
+            if (body.Name is null && body.Summary is null && !touchAccent && !touchCode
+                && addAliases.Length == 0 && removeAliases.Length == 0 && !touchDossier)
+            {
+                return Results.Json(
+                    ApiErrors.Create(
+                        ApiErrorCodes.BadRequest,
+                        "Provide at least one of name, summary, code, accentColor, dossier, addAliases, or removeAliases.",
+                        requestId),
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            string? name = null;
+            string? summary = null;
+            string? code = null;
+            if (body.Name is not null || body.Summary is not null || touchCode)
+            {
+                var codeValue = body.ClearCode == true ? null : body.Code;
+                (name, summary, code) = projects.Update(body.Id, body.Name, body.Summary, codeValue, touchCode);
+            }
+
+            string? accentColor = null;
+            var accentApplied = false;
+            if (touchAccent)
+            {
+                accentColor = projects.SetAccentColor(body.Id, body.AccentColor);
+                accentApplied = true;
+            }
+
+            ProjectDossier? dossier = null;
+            if (touchDossier)
+            {
+                dossier = projects.UpdateDossier(body.Id, body.Dossier!);
+            }
+
+            var added = new List<object>();
+            foreach (var alias in addAliases)
+            {
+                if (string.IsNullOrWhiteSpace(alias))
+                {
+                    continue;
+                }
+
+                var record = projects.AddAlias(body.Id, alias);
+                added.Add(new { id = record.Id, alias = record.Alias });
+            }
+
+            var removed = new List<string>();
+            foreach (var alias in removeAliases)
+            {
+                if (string.IsNullOrWhiteSpace(alias))
+                {
+                    continue;
+                }
+
+                if (projects.RemoveAlias(body.Id, alias))
+                {
+                    removed.Add(alias.Trim());
+                }
+            }
+
+            hub.Publish(new OrbitEvent
+            {
+                Type = "project.updated",
+                Payload = new
+                {
+                    projectId = body.Id,
+                    name,
+                    summary,
+                    code,
+                    accentColor = accentApplied ? accentColor : null,
+                    dossierUpdated = touchDossier,
+                },
+            });
+
+            dossier ??= projects.GetDossier(body.Id);
+
+            return Results.Json(new
+            {
+                tool = "orbit_update_project",
+                requestId,
+                projectId = body.Id,
+                name,
+                summary,
+                code,
+                accentColor = accentApplied ? accentColor : null,
+                accentUpdated = accentApplied,
+                dossier = WorkbenchEndpoints.MapDossier(dossier),
+                dossierEmpty = dossier.IsStructurallyEmpty,
+                aliasesAdded = added,
+                aliasesRemoved = removed,
+                aliases = projects.ListAliases(body.Id).Select(a => new { id = a.Id, alias = a.Alias }),
+            });
+        }
+        catch (ArgumentException ex)
+        {
+            return MutationError(ex, requestId);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.Json(
+                ApiErrors.Create(ApiErrorCodes.Conflict, ex.Message, requestId),
+                statusCode: StatusCodes.Status409Conflict);
+        }
+    }
+
+    private static IResult MergeProject(MergeProjectToolBody? body, ProjectMergeStore merge, EventHub hub, HttpContext http)
+    {
+        var requestId = ApiKeyMiddleware.GetRequestId(http);
+        try
+        {
+            if (body is null
+                || string.IsNullOrWhiteSpace(body.SourceProjectId)
+                || string.IsNullOrWhiteSpace(body.TargetProjectId))
+            {
+                return Results.Json(
+                    ApiErrors.Create(
+                        ApiErrorCodes.BadRequest,
+                        "Body fields 'sourceProjectId' and 'targetProjectId' are required.",
+                        requestId),
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            if (body.PreviewOnly == true)
+            {
+                var preview = merge.Preview(body.SourceProjectId, body.TargetProjectId);
+                return Results.Json(new
+                {
+                    tool = "orbit_merge_project",
+                    requestId,
+                    preview = new
+                    {
+                        sourceProjectId = preview.SourceProjectId,
+                        sourceName = preview.SourceName,
+                        targetProjectId = preview.TargetProjectId,
+                        targetName = preview.TargetName,
+                        taskCount = preview.TaskCount,
+                        noteCount = preview.NoteCount,
+                        workstreamCount = preview.WorkstreamCount,
+                        fileLinkCount = preview.FileLinkCount,
+                        emailLinkCount = preview.EmailLinkCount,
+                        contactLinkCount = preview.ContactLinkCount,
+                        aliasCount = preview.AliasCount,
+                        blockerCount = preview.BlockerCount,
+                        folderCount = preview.FolderCount,
+                        warnings = preview.Warnings,
+                    },
+                });
+            }
+
+            var result = merge.Merge(
+                body.SourceProjectId,
+                body.TargetProjectId,
+                body.Force == true,
+                body.Actor ?? "agent");
+            hub.Publish(new OrbitEvent
+            {
+                Type = "project.merged",
+                Payload = new
+                {
+                    sourceProjectId = result.SourceProjectId,
+                    targetProjectId = result.TargetProjectId,
+                },
+            });
+            return Results.Json(new
+            {
+                tool = "orbit_merge_project",
+                requestId,
+                merge = new
+                {
+                    sourceProjectId = result.SourceProjectId,
+                    sourceName = result.SourceName,
+                    targetProjectId = result.TargetProjectId,
+                    targetName = result.TargetName,
+                    archivedSource = result.ArchivedSource,
+                    mergedAt = result.MergedAt,
+                    moved = result.Moved,
+                },
+            });
+        }
+        catch (ArgumentException ex)
+        {
+            return MutationError(ex, requestId);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.Json(
+                ApiErrors.Create(ApiErrorCodes.Conflict, ex.Message, requestId),
+                statusCode: StatusCodes.Status409Conflict);
+        }
+    }
+
+    private static IResult AddProjectAlias(ProjectAliasToolBody? body, ProjectWriteStore projects, EventHub hub, HttpContext http)
+    {
+        var requestId = ApiKeyMiddleware.GetRequestId(http);
+        try
+        {
+            if (body is null || string.IsNullOrWhiteSpace(body.ProjectId) || string.IsNullOrWhiteSpace(body.Alias))
+            {
+                return Results.Json(
+                    ApiErrors.Create(ApiErrorCodes.BadRequest, "Body fields 'projectId' and 'alias' are required.", requestId),
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            var created = projects.AddAlias(body.ProjectId, body.Alias);
+            hub.Publish(new OrbitEvent
+            {
+                Type = "project.alias_added",
+                Payload = new { projectId = created.ProjectId, aliasId = created.Id, alias = created.Alias },
+            });
+            return Results.Json(
+                new { tool = "orbit_add_project_alias", requestId, alias = created },
+                statusCode: StatusCodes.Status201Created);
+        }
+        catch (ArgumentException ex)
+        {
+            return MutationError(ex, requestId);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.Json(
+                ApiErrors.Create(ApiErrorCodes.Conflict, ex.Message, requestId),
+                statusCode: StatusCodes.Status409Conflict);
+        }
+    }
+
+    private static IResult RemoveProjectAlias(ProjectAliasToolBody? body, ProjectWriteStore projects, EventHub hub, HttpContext http)
+    {
+        var requestId = ApiKeyMiddleware.GetRequestId(http);
+        try
+        {
+            if (body is null || string.IsNullOrWhiteSpace(body.ProjectId)
+                || (string.IsNullOrWhiteSpace(body.Alias) && string.IsNullOrWhiteSpace(body.AliasId)))
+            {
+                return Results.Json(
+                    ApiErrors.Create(
+                        ApiErrorCodes.BadRequest,
+                        "Body fields 'projectId' and 'alias' or 'aliasId' are required.",
+                        requestId),
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            var key = body.AliasId ?? body.Alias!;
+            if (!projects.RemoveAlias(body.ProjectId, key))
+            {
+                return Results.Json(
+                    ApiErrors.Create(ApiErrorCodes.NotFound, "Alias was not found on that project.", requestId),
+                    statusCode: StatusCodes.Status404NotFound);
+            }
+
+            hub.Publish(new OrbitEvent
+            {
+                Type = "project.alias_removed",
+                Payload = new { projectId = body.ProjectId, alias = key },
+            });
+            return Results.Json(new { tool = "orbit_remove_project_alias", requestId, projectId = body.ProjectId, removed = key });
+        }
+        catch (ArgumentException ex)
+        {
+            return MutationError(ex, requestId);
+        }
+    }
+
+    private static IResult ListProjectAliases(string? projectId, ProjectWriteStore projects, HttpContext http)
+    {
+        var requestId = ApiKeyMiddleware.GetRequestId(http);
+        if (string.IsNullOrWhiteSpace(projectId))
+        {
+            return Results.Json(
+                ApiErrors.Create(ApiErrorCodes.BadRequest, "Query parameter 'projectId' is required.", requestId),
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        return ListProjectAliasesPayload(projectId, projects, requestId);
+    }
+
+    private static IResult ListProjectAliasesPost(ListProjectAliasesBody? body, ProjectWriteStore projects, HttpContext http)
+    {
+        var requestId = ApiKeyMiddleware.GetRequestId(http);
+        var projectId = body?.ProjectId;
+        if (string.IsNullOrWhiteSpace(projectId))
+        {
+            return Results.Json(
+                ApiErrors.Create(ApiErrorCodes.BadRequest, "Body field 'projectId' is required.", requestId),
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        return ListProjectAliasesPayload(projectId, projects, requestId);
+    }
+
+    private static IResult ListProjectAliasesPayload(string projectId, ProjectWriteStore projects, string requestId)
+    {
+        try
+        {
+            var aliases = projects.ListAliases(projectId);
+            return Results.Json(new
+            {
+                tool = "orbit_list_project_aliases",
+                requestId,
+                projectId,
+                aliases = aliases.Select(a => new { id = a.Id, alias = a.Alias, normalizedAlias = a.NormalizedAlias }),
+            });
         }
         catch (ArgumentException ex)
         {
@@ -648,73 +1034,6 @@ public static class AgentToolEndpoints
         {
             var workstreams = mutations.ListWorkstreams(projectId);
             return Results.Json(new { tool = "orbit_list_workstreams", requestId, projectId, workstreams });
-        }
-        catch (ArgumentException ex)
-        {
-            return MutationError(ex, requestId);
-        }
-    }
-
-    private static IResult UpdateProject(UpdateProjectToolBody? body, ProjectWriteStore projects, EventHub hub, HttpContext http)
-    {
-        var requestId = ApiKeyMiddleware.GetRequestId(http);
-        try
-        {
-            if (body is null || string.IsNullOrWhiteSpace(body.Id))
-            {
-                return Results.Json(
-                    ApiErrors.Create(ApiErrorCodes.BadRequest, "Body field 'id' is required.", requestId),
-                    statusCode: StatusCodes.Status400BadRequest);
-            }
-
-            var touchAccent = body.AccentColor is not null;
-            if (body.Name is null && body.Summary is null && !touchAccent)
-            {
-                return Results.Json(
-                    ApiErrors.Create(
-                        ApiErrorCodes.BadRequest,
-                        "Provide at least one of name, summary, or accentColor.",
-                        requestId),
-                    statusCode: StatusCodes.Status400BadRequest);
-            }
-
-            string? name = null;
-            string? summary = null;
-            if (body.Name is not null || body.Summary is not null)
-            {
-                (name, summary) = projects.Update(body.Id, body.Name, body.Summary);
-            }
-
-            string? accentColor = null;
-            var accentApplied = false;
-            if (touchAccent)
-            {
-                accentColor = projects.SetAccentColor(body.Id, body.AccentColor);
-                accentApplied = true;
-            }
-
-            hub.Publish(new OrbitEvent
-            {
-                Type = "project.updated",
-                Payload = new
-                {
-                    projectId = body.Id,
-                    name,
-                    summary,
-                    accentColor = accentApplied ? accentColor : null,
-                },
-            });
-
-            return Results.Json(new
-            {
-                tool = "orbit_update_project",
-                requestId,
-                projectId = body.Id,
-                name,
-                summary,
-                accentColor = accentApplied ? accentColor : null,
-                accentUpdated = accentApplied,
-            });
         }
         catch (ArgumentException ex)
         {
@@ -1473,8 +1792,15 @@ public static class AgentToolEndpoints
 
         public string? Summary { get; set; }
 
+        public string? Code { get; set; }
+
+        public string[]? Aliases { get; set; }
+
         /// <summary>Defaults to true for Hermes — project appears on Pulse orbit.</summary>
         public bool? InOrbit { get; set; }
+
+        /// <summary>When true, create even if near-duplicate candidates exist.</summary>
+        public bool? Force { get; set; }
     }
 
     private sealed class CreateWorkstreamBody
@@ -1495,6 +1821,20 @@ public static class AgentToolEndpoints
         public string? ProjectId { get; set; }
     }
 
+    private sealed class ListProjectAliasesBody
+    {
+        public string? ProjectId { get; set; }
+    }
+
+    private sealed class ProjectAliasToolBody
+    {
+        public string? ProjectId { get; set; }
+
+        public string? Alias { get; set; }
+
+        public string? AliasId { get; set; }
+    }
+
     private sealed class UpdateTaskBody
     {
         public string? Id { get; set; }
@@ -1513,6 +1853,12 @@ public static class AgentToolEndpoints
 
         public int? Urgency { get; set; }
 
+        public string? ProjectId { get; set; }
+
+        public string? WorkstreamId { get; set; }
+
+        public bool? ClearWorkstream { get; set; }
+
         public string? Actor { get; set; }
 
         public MutationProvenanceBody? Provenance { get; set; }
@@ -1526,8 +1872,33 @@ public static class AgentToolEndpoints
 
         public string? Summary { get; set; }
 
+        public string? Code { get; set; }
+
+        public bool? ClearCode { get; set; }
+
+        public string[]? AddAliases { get; set; }
+
+        public string[]? RemoveAliases { get; set; }
+
         /// <summary>#RRGGBB, named preset (blue/teal/...), or default/none/clear to restore theme.</summary>
         public string? AccentColor { get; set; }
+
+        public ProjectDossierPatch? Dossier { get; set; }
+    }
+
+    private sealed class MergeProjectToolBody
+    {
+        public string? SourceProjectId { get; set; }
+
+        public string? TargetProjectId { get; set; }
+
+        /// <summary>When true, proceed despite preview warnings (e.g. dual home folders).</summary>
+        public bool? Force { get; set; }
+
+        /// <summary>When true, return counts only — do not merge.</summary>
+        public bool? PreviewOnly { get; set; }
+
+        public string? Actor { get; set; }
     }
 
     private sealed class GetWorkbenchBody

@@ -25,6 +25,10 @@ public sealed class ProjectRecord
     public double? BoardW { get; init; }
 
     public double? BoardH { get; init; }
+
+    public ProjectDossier? Dossier { get; init; }
+
+    public bool DossierEmpty { get; init; } = true;
 }
 
 public sealed class ProjectReadStore
@@ -39,7 +43,7 @@ public sealed class ProjectReadStore
         using var cmd = connection.CreateCommand();
         cmd.CommandText =
             """
-            SELECT id, name, code, summary, status, accent_color, sort_order, board_x, board_y, board_w, board_h
+            SELECT id, name, code, summary, status, accent_color, sort_order, board_x, board_y, board_w, board_h, dossier_json
             FROM projects
             WHERE archived_at IS NULL
             ORDER BY sort_order ASC, name COLLATE NOCASE;
@@ -62,7 +66,7 @@ public sealed class ProjectReadStore
         using var cmd = connection.CreateCommand();
         cmd.CommandText =
             """
-            SELECT id, name, code, summary, status, accent_color, sort_order, board_x, board_y, board_w, board_h
+            SELECT id, name, code, summary, status, accent_color, sort_order, board_x, board_y, board_w, board_h, dossier_json
             FROM projects
             WHERE id = $id AND archived_at IS NULL
             LIMIT 1;
@@ -72,8 +76,11 @@ public sealed class ProjectReadStore
         return reader.Read() ? ReadProject(reader) : null;
     }
 
-    private static ProjectRecord ReadProject(SqliteDataReader reader) =>
-        new()
+    private static ProjectRecord ReadProject(SqliteDataReader reader)
+    {
+        var dossierJson = reader.FieldCount > 11 && !reader.IsDBNull(11) ? reader.GetString(11) : null;
+        var dossier = ProjectDossier.Parse(dossierJson);
+        return new ProjectRecord
         {
             Id = reader.GetString(0),
             Name = reader.GetString(1),
@@ -86,7 +93,10 @@ public sealed class ProjectReadStore
             BoardY = reader.IsDBNull(8) ? null : reader.GetDouble(8),
             BoardW = reader.IsDBNull(9) ? null : reader.GetDouble(9),
             BoardH = reader.IsDBNull(10) ? null : reader.GetDouble(10),
+            Dossier = dossier.IsStructurallyEmpty ? null : dossier,
+            DossierEmpty = dossier.IsStructurallyEmpty,
         };
+    }
 }
 
 public sealed class OrbitDatabase

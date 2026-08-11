@@ -137,6 +137,7 @@
                             DragOver="OrbitTree_DragOver"
                             Drop="OrbitTree_Drop"
                             ItemInvoked="OrbitTree_ItemInvoked"
+                            SelectionChanged="OrbitTree_SelectionChanged"
                             SelectionMode="Single">
                             <TreeView.ItemTemplate>
                                 <DataTemplate x:DataType="vm:OrbitTreeNodeVm">

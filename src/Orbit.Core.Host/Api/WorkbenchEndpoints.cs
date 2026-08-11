@@ -30,6 +30,19 @@ public sealed class UpdateProjectRequest
     public string? Name { get; set; }
 
     public string? Summary { get; set; }
+
+    public string? Code { get; set; }
+
+    /// <summary>When true, <see cref="Code"/> is applied (null/empty clears).</summary>
+    public bool? ClearCode { get; set; }
+
+    /// <summary>Partial dossier patch (structured project context).</summary>
+    public ProjectDossierPatch? Dossier { get; set; }
+}
+
+public sealed class AddProjectAliasRequest
+{
+    public string? Alias { get; set; }
 }
 
 public sealed class UpdateNoteRequest
@@ -162,34 +175,167 @@ public static class WorkbenchEndpoints
             var requestId = ApiKeyMiddleware.GetRequestId(http);
             try
             {
-                if (body is null || (body.Name is null && body.Summary is null))
+                var touchCode = body?.Code is not null || body?.ClearCode == true;
+                var touchDossier = body?.Dossier?.HasAnyField == true;
+                if (body is null || (body.Name is null && body.Summary is null && !touchCode && !touchDossier))
                 {
                     return Results.Json(
-                        ApiErrors.Create(ApiErrorCodes.BadRequest, "Provide name and/or summary.", requestId),
+                        ApiErrors.Create(ApiErrorCodes.BadRequest, "Provide name, summary, code, and/or dossier.", requestId),
                         statusCode: StatusCodes.Status400BadRequest);
                 }
 
-                var updated = projects.Update(id, body.Name, body.Summary);
+                string? name = null;
+                string? summary = null;
+                string? code = null;
+                if (body.Name is not null || body.Summary is not null || touchCode)
+                {
+                    var codeValue = body.ClearCode == true ? null : body.Code;
+                    (name, summary, code) = projects.Update(id, body.Name, body.Summary, codeValue, touchCode);
+                }
+
+                ProjectDossier? dossier = null;
+                if (touchDossier)
+                {
+                    dossier = projects.UpdateDossier(id, body.Dossier!);
+                }
+                else
+                {
+                    try
+                    {
+                        dossier = projects.GetDossier(id);
+                    }
+                    catch (ArgumentException)
+                    {
+                        dossier = null;
+                    }
+                }
+
                 hub.Publish(new OrbitEvent
                 {
                     Type = "project.updated",
-                    Payload = new { projectId = id, name = updated.Name, summary = updated.Summary },
+                    Payload = new { projectId = id, name, summary, code, dossierUpdated = touchDossier },
                 });
                 return Results.Json(new
                 {
                     projectId = id,
-                    name = updated.Name,
-                    summary = updated.Summary,
+                    name,
+                    summary,
+                    code,
+                    dossier = dossier is null ? null : MapDossier(dossier),
+                    dossierEmpty = dossier?.IsStructurallyEmpty ?? true,
                     requestId,
                 });
             }
             catch (ArgumentException ex)
             {
-                var code = ex.ParamName == "projectId" ? ApiErrorCodes.NotFound : ApiErrorCodes.BadRequest;
-                var status = code == ApiErrorCodes.NotFound
+                var err = ex.ParamName == "projectId" ? ApiErrorCodes.NotFound : ApiErrorCodes.BadRequest;
+                var status = err == ApiErrorCodes.NotFound
                     ? StatusCodes.Status404NotFound
                     : StatusCodes.Status400BadRequest;
-                return Results.Json(ApiErrors.Create(code, ex.Message, requestId), statusCode: status);
+                return Results.Json(ApiErrors.Create(err, ex.Message, requestId), statusCode: status);
+            }
+        });
+
+        app.MapGet(HostEndpoints.ProjectAliases, (
+            string id,
+            ProjectWriteStore projects,
+            HttpContext http) =>
+        {
+            var requestId = ApiKeyMiddleware.GetRequestId(http);
+            try
+            {
+                var aliases = projects.ListAliases(id);
+                return Results.Json(new
+                {
+                    projectId = id,
+                    aliases = aliases.Select(a => new { id = a.Id, alias = a.Alias, normalizedAlias = a.NormalizedAlias }),
+                    requestId,
+                });
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.Json(
+                    ApiErrors.Create(ApiErrorCodes.NotFound, ex.Message, requestId),
+                    statusCode: StatusCodes.Status404NotFound);
+            }
+        });
+
+        app.MapPost(HostEndpoints.ProjectAliases, (
+            string id,
+            AddProjectAliasRequest? body,
+            ProjectWriteStore projects,
+            EventHub hub,
+            HttpContext http) =>
+        {
+            var requestId = ApiKeyMiddleware.GetRequestId(http);
+            try
+            {
+                if (body is null || string.IsNullOrWhiteSpace(body.Alias))
+                {
+                    return Results.Json(
+                        ApiErrors.Create(ApiErrorCodes.BadRequest, "Provide alias.", requestId),
+                        statusCode: StatusCodes.Status400BadRequest);
+                }
+
+                var created = projects.AddAlias(id, body.Alias);
+                hub.Publish(new OrbitEvent
+                {
+                    Type = "project.alias_added",
+                    Payload = new { projectId = id, aliasId = created.Id, alias = created.Alias },
+                });
+                return Results.Json(new
+                {
+                    id = created.Id,
+                    projectId = created.ProjectId,
+                    alias = created.Alias,
+                    normalizedAlias = created.NormalizedAlias,
+                    requestId,
+                }, statusCode: StatusCodes.Status201Created);
+            }
+            catch (ArgumentException ex)
+            {
+                var status = ex.ParamName == "projectId"
+                    ? StatusCodes.Status404NotFound
+                    : StatusCodes.Status400BadRequest;
+                return Results.Json(ApiErrors.Create(ApiErrorCodes.BadRequest, ex.Message, requestId), statusCode: status);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.Json(
+                    ApiErrors.Create(ApiErrorCodes.Conflict, ex.Message, requestId),
+                    statusCode: StatusCodes.Status409Conflict);
+            }
+        });
+
+        app.MapDelete(HostEndpoints.ProjectAliasById, (
+            string id,
+            string aliasId,
+            ProjectWriteStore projects,
+            EventHub hub,
+            HttpContext http) =>
+        {
+            var requestId = ApiKeyMiddleware.GetRequestId(http);
+            try
+            {
+                if (!projects.RemoveAlias(id, aliasId))
+                {
+                    return Results.Json(
+                        ApiErrors.Create(ApiErrorCodes.NotFound, "Alias was not found on that project.", requestId),
+                        statusCode: StatusCodes.Status404NotFound);
+                }
+
+                hub.Publish(new OrbitEvent
+                {
+                    Type = "project.alias_removed",
+                    Payload = new { projectId = id, aliasId },
+                });
+                return Results.Json(new { projectId = id, aliasId, removed = true, requestId });
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.Json(
+                    ApiErrors.Create(ApiErrorCodes.NotFound, ex.Message, requestId),
+                    statusCode: StatusCodes.Status404NotFound);
             }
         });
 
@@ -427,6 +573,10 @@ public static class WorkbenchEndpoints
                 id = context.Id,
                 name = context.Name,
                 summary = context.Summary,
+                code = context.Code,
+                dossier = context.Dossier is null ? null : MapDossier(context.Dossier),
+                dossierEmpty = context.DossierEmpty,
+                aliases = context.Aliases.Select(a => new { id = a.Id, alias = a.Alias }),
                 tasks = context.Tasks.Select(t => new
                 {
                     taskId = t.TaskId,
@@ -515,6 +665,9 @@ public static class WorkbenchEndpoints
                 dueAt = task.DueAt,
                 priority = task.Priority,
                 urgency = task.Urgency,
+                sourceKind = task.SourceKind,
+                sourceConfidence = task.SourceConfidence,
+                sourceMatchReason = task.SourceMatchReason,
                 requestId,
             });
         });
@@ -573,8 +726,134 @@ public static class WorkbenchEndpoints
             }
         });
 
+        app.MapPost(HostEndpoints.ProjectMergePreview, (
+            MergeProjectRequest? body,
+            ProjectMergeStore merge,
+            HttpContext http) =>
+        {
+            var requestId = ApiKeyMiddleware.GetRequestId(http);
+            try
+            {
+                if (body is null
+                    || string.IsNullOrWhiteSpace(body.SourceProjectId)
+                    || string.IsNullOrWhiteSpace(body.TargetProjectId))
+                {
+                    return Results.Json(
+                        ApiErrors.Create(
+                            ApiErrorCodes.BadRequest,
+                            "sourceProjectId and targetProjectId are required.",
+                            requestId),
+                        statusCode: StatusCodes.Status400BadRequest);
+                }
+
+                var preview = merge.Preview(body.SourceProjectId, body.TargetProjectId);
+                return Results.Json(new { requestId, preview = MapMergePreview(preview) });
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.Json(
+                    ApiErrors.Create(ApiErrorCodes.BadRequest, ex.Message, requestId),
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+        });
+
+        app.MapPost(HostEndpoints.ProjectMerge, (
+            MergeProjectRequest? body,
+            ProjectMergeStore merge,
+            EventHub hub,
+            HttpContext http) =>
+        {
+            var requestId = ApiKeyMiddleware.GetRequestId(http);
+            try
+            {
+                if (body is null
+                    || string.IsNullOrWhiteSpace(body.SourceProjectId)
+                    || string.IsNullOrWhiteSpace(body.TargetProjectId))
+                {
+                    return Results.Json(
+                        ApiErrors.Create(
+                            ApiErrorCodes.BadRequest,
+                            "sourceProjectId and targetProjectId are required.",
+                            requestId),
+                        statusCode: StatusCodes.Status400BadRequest);
+                }
+
+                var result = merge.Merge(
+                    body.SourceProjectId,
+                    body.TargetProjectId,
+                    body.Force == true,
+                    body.Actor ?? "user");
+                hub.Publish(new OrbitEvent
+                {
+                    Type = "project.merged",
+                    Payload = new
+                    {
+                        sourceProjectId = result.SourceProjectId,
+                        targetProjectId = result.TargetProjectId,
+                    },
+                });
+                return Results.Json(new { requestId, merge = MapMergeResult(result) });
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.Json(
+                    ApiErrors.Create(ApiErrorCodes.BadRequest, ex.Message, requestId),
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.Json(
+                    ApiErrors.Create(ApiErrorCodes.Conflict, ex.Message, requestId),
+                    statusCode: StatusCodes.Status409Conflict);
+            }
+        });
+
         return app;
     }
+
+    private static object MapMergePreview(ProjectMergePreview preview) => new
+    {
+        sourceProjectId = preview.SourceProjectId,
+        sourceName = preview.SourceName,
+        targetProjectId = preview.TargetProjectId,
+        targetName = preview.TargetName,
+        taskCount = preview.TaskCount,
+        noteCount = preview.NoteCount,
+        workstreamCount = preview.WorkstreamCount,
+        fileLinkCount = preview.FileLinkCount,
+        emailLinkCount = preview.EmailLinkCount,
+        contactLinkCount = preview.ContactLinkCount,
+        aliasCount = preview.AliasCount,
+        blockerCount = preview.BlockerCount,
+        folderCount = preview.FolderCount,
+        warnings = preview.Warnings,
+    };
+
+    private static object MapMergeResult(ProjectMergeResult result) => new
+    {
+        sourceProjectId = result.SourceProjectId,
+        sourceName = result.SourceName,
+        targetProjectId = result.TargetProjectId,
+        targetName = result.TargetName,
+        archivedSource = result.ArchivedSource,
+        mergedAt = result.MergedAt,
+        moved = new
+        {
+            tasks = result.Moved.Tasks,
+            notes = result.Moved.Notes,
+            workstreams = result.Moved.Workstreams,
+            blockers = result.Moved.Blockers,
+            suggestions = result.Moved.Suggestions,
+            extractions = result.Moved.Extractions,
+            folders = result.Moved.Folders,
+            fileLinks = result.Moved.FileLinks,
+            emailLinks = result.Moved.EmailLinks,
+            contactLinks = result.Moved.ContactLinks,
+            aliases = result.Moved.Aliases,
+            eventLinks = result.Moved.EventLinks,
+            sourceNameAliasAdded = result.Moved.SourceNameAliasAdded,
+        },
+    };
 
     private static object MapCell(ProjectCellRecord cell) => new
     {
@@ -604,6 +883,8 @@ public static class WorkbenchEndpoints
         boardY = cell.BoardY,
         boardW = cell.BoardW,
         boardH = cell.BoardH,
+        dossierEmpty = cell.DossierEmpty,
+        missingNextAction = cell.MissingNextAction,
     };
 
     private static object MapLimbo(LimboNoteRecord note) => new
@@ -614,6 +895,38 @@ public static class WorkbenchEndpoints
         suggestionId = note.SuggestionId,
         suggestionSummary = note.SuggestionSummary,
     };
+
+    internal static object MapDossier(ProjectDossier dossier) => new
+    {
+        version = dossier.Version,
+        address = dossier.Address,
+        ownerClient = dossier.OwnerClient,
+        phase = dossier.Phase,
+        portfolio = dossier.Portfolio,
+        linkedFolder = dossier.LinkedFolder,
+        criticalContacts = dossier.CriticalContacts.Select(c => new
+        {
+            name = c.Name,
+            role = c.Role,
+            personId = c.PersonId,
+            contact = c.Contact,
+        }),
+        mailboxSources = dossier.MailboxSources,
+        calendarSources = dossier.CalendarSources,
+        currentPriorities = dossier.CurrentPriorities,
+        empty = dossier.IsStructurallyEmpty,
+    };
+}
+
+public sealed class MergeProjectRequest
+{
+    public string? SourceProjectId { get; set; }
+
+    public string? TargetProjectId { get; set; }
+
+    public bool? Force { get; set; }
+
+    public string? Actor { get; set; }
 }
 
 public sealed class ArchiveRequest

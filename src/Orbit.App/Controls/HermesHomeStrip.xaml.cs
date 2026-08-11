@@ -77,6 +77,13 @@ public sealed partial class HermesHomeStrip : UserControl
         var summary = string.IsNullOrWhiteSpace(run.BriefingSummary)
             ? run.Status
             : Truncate(run.BriefingSummary!, 140);
+        if (summary.Equals("[SILENT]", StringComparison.OrdinalIgnoreCase)
+            || summary.Equals("SILENT", StringComparison.OrdinalIgnoreCase)
+            || summary.Equals("Nothing material to surface.", StringComparison.OrdinalIgnoreCase))
+        {
+            summary = "nothing new to surface";
+        }
+
         return $"Hermes · {FriendlyTrigger(run.TriggerKind)} · {when} — {summary}";
     }
 

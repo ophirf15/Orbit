@@ -38,17 +38,26 @@ public sealed class EmailDutyEnsureService
         }
 
         var projectIds = email.ProjectIds.ToList();
+        string? matchReason = null;
+        double? matchConfidence = null;
         if (projectIds.Count == 0)
         {
-            var matches = EmailProjectAutoLinker.MatchProjects(_factory, email.Subject, email.BodyPreview);
-            foreach (var m in matches.Where(m => m.Confidence >= 0.72))
+            var matches = EmailProjectAutoLinker.MatchCandidates(_factory, email.Subject, email.BodyPreview);
+            foreach (var m in matches.Where(m => m.Score >= 0.72))
             {
-                _emails.LinkToProject(emailId, m.ProjectId);
+                _emails.LinkToProject(emailId, m.ProjectId, m.Score, m.Reason);
                 projectIds.Add(m.ProjectId);
+                matchReason ??= m.Reason;
+                matchConfidence ??= m.Score;
             }
 
             email = _emails.Get(emailId) ?? email;
             projectIds = email.ProjectIds.ToList();
+        }
+        else
+        {
+            // Prefer stored link provenance when already linked.
+            (matchConfidence, matchReason) = ReadLinkProvenance(emailId, projectIds[0]);
         }
 
         if (projectIds.Count == 0)
@@ -86,6 +95,8 @@ public sealed class EmailDutyEnsureService
                     actor: "duty-ensure",
                     body: needBody ? brief : null);
             }
+
+            StampTaskSource(taskId, matchConfidence, matchReason);
         }
         else
         {
@@ -95,7 +106,10 @@ public sealed class EmailDutyEnsureService
                 status: TaskStatuses.Active,
                 actor: "duty-ensure",
                 nextAction: next,
-                body: brief);
+                body: brief,
+                sourceKind: "email",
+                sourceConfidence: matchConfidence,
+                sourceMatchReason: matchReason);
             taskId = created.Id;
         }
 
@@ -117,6 +131,50 @@ public sealed class EmailDutyEnsureService
             ProjectId = projectId,
             Detail = $"Ensured brief on task {taskId}.",
         };
+    }
+
+    private (double? Confidence, string? Reason) ReadLinkProvenance(string emailId, string projectId)
+    {
+        using var connection = _factory.CreateConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            """
+            SELECT confidence, match_reason
+            FROM email_project_links
+            WHERE email_artifact_id = $e AND project_id = $p
+            LIMIT 1;
+            """;
+        cmd.Parameters.AddWithValue("$e", emailId);
+        cmd.Parameters.AddWithValue("$p", projectId);
+        using var reader = cmd.ExecuteReader();
+        if (!reader.Read())
+        {
+            return (null, null);
+        }
+
+        return (
+            reader.IsDBNull(0) ? null : reader.GetDouble(0),
+            reader.IsDBNull(1) ? null : reader.GetString(1));
+    }
+
+    private void StampTaskSource(string taskId, double? confidence, string? reason)
+    {
+        using var connection = _factory.CreateConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            """
+            UPDATE tasks
+            SET source_kind = COALESCE(source_kind, 'email'),
+                source_confidence = COALESCE(source_confidence, $c),
+                source_match_reason = COALESCE(source_match_reason, $r),
+                updated_at = $t
+            WHERE id = $id AND archived_at IS NULL;
+            """;
+        cmd.Parameters.AddWithValue("$id", taskId);
+        cmd.Parameters.AddWithValue("$c", (object?)confidence ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$r", (object?)(string.IsNullOrWhiteSpace(reason) ? null : reason.Trim()) ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$t", DateTime.UtcNow.ToString("O"));
+        cmd.ExecuteNonQuery();
     }
 
     private string? FindLinkedTaskId(string emailId)

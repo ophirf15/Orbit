@@ -20,7 +20,10 @@ public static class OutlookPushCoordinator
         OrbitSettings settings,
         JsonOrbitSettingsStore store,
         IReadOnlyList<string>? projectIds = null,
+        string? memo = null,
         Action<string, string>? progress = null,
+        bool waitForDutyBriefing = true,
+        Action? onFloorReady = null,
         CancellationToken ct = default)
     {
         progress?.Invoke("Reading Outlook…", "Grabbing the selected message.");
@@ -30,7 +33,42 @@ public static class OutlookPushCoordinator
             return new PushResult(
                 false,
                 export.Error ?? "No Outlook message selected.",
-                "Select mail in Classic Outlook, then press Ctrl+Shift+O.",
+                "Select mail in Classic Outlook, then press Ctrl+Shift+O or the Orbit button.",
+                0,
+                null,
+                null);
+        }
+
+        return await PushExportedAsync(
+            settings,
+            store,
+            export.Mails,
+            projectIds,
+            memo,
+            waitForDutyBriefing,
+            progress,
+            ct,
+            onFloorReady).ConfigureAwait(true);
+    }
+
+    /// <summary>Ingest already-captured .msg files (queue snapshots).</summary>
+    public static async Task<PushResult> PushExportedAsync(
+        OrbitSettings settings,
+        JsonOrbitSettingsStore store,
+        IReadOnlyList<OutlookSelectionPush.ExportedMail> mails,
+        IReadOnlyList<string>? projectIds = null,
+        string? memo = null,
+        bool waitForDutyBriefing = true,
+        Action<string, string>? progress = null,
+        CancellationToken ct = default,
+        Action? onFloorReady = null)
+    {
+        if (mails.Count == 0)
+        {
+            return new PushResult(
+                false,
+                "No Outlook message selected.",
+                "Select mail in Classic Outlook, then press Ctrl+Shift+O or the Orbit button.",
                 0,
                 null,
                 null);
@@ -41,7 +79,8 @@ public static class OutlookPushCoordinator
         string? lastId = null;
         string? lastSubject = null;
         var failNotes = new List<string>();
-        foreach (var mail in export.Mails)
+        var trimmedMemo = string.IsNullOrWhiteSpace(memo) ? null : memo.Trim();
+        foreach (var mail in mails)
         {
             try
             {
@@ -54,7 +93,8 @@ public static class OutlookPushCoordinator
                 File.Copy(mail.MsgPath, dest, overwrite: true);
 
                 using var client = new CoreHostClient(settings, store);
-                var ingested = await client.IngestEmailAsync(dest, projectIds, ct).ConfigureAwait(true);
+                var ingested = await client.IngestEmailAsync(dest, projectIds, trimmedMemo, ct)
+                    .ConfigureAwait(true);
                 if (ingested is null)
                 {
                     failNotes.Add(mail.Subject ?? Path.GetFileName(mail.MsgPath));
@@ -93,9 +133,20 @@ public static class OutlookPushCoordinator
                 null);
         }
 
+        if (!waitForDutyBriefing)
+        {
+            return new PushResult(
+                true,
+                $"Pushed “{lastSubject ?? "mail"}” — Hermes is working in the background.",
+                "Queued the next capture when ready. Hermes will organize this mail without blocking the queue.",
+                ok,
+                lastId,
+                null);
+        }
+
         progress?.Invoke(
             $"Pushed “{lastSubject ?? "mail"}” — Hermes is working…",
-            "Reading the email, matching projects, updating the workbench.");
+            HermesThinkingCopy.NextDutyStage(TimeSpan.Zero, 0));
 
         var briefing = await WaitForDutyBriefingAsync(
             settings,
@@ -104,12 +155,9 @@ public static class OutlookPushCoordinator
             lastSubject,
             pushStarted,
             progress,
-            ct).ConfigureAwait(true);
-
-        if (failNotes.Count > 0)
-        {
-            // keep going
-        }
+            ct,
+            timeoutSeconds: 120,
+            onFloorReady: onFloorReady).ConfigureAwait(true);
 
         if (!string.IsNullOrWhiteSpace(briefing))
         {
@@ -125,7 +173,9 @@ public static class OutlookPushCoordinator
         return new PushResult(
             true,
             $"Pushed “{lastSubject ?? "mail"}” — still organizing.",
-            "Mail is in Orbit. Hermes has not finished this run yet — leave the Workbench open; the banner will update when you push again, or check Settings → Hermes.",
+            "Mail is in Orbit, but no duty briefing arrived in time. " +
+            "Stuck Hermes runs (if any) were cleared automatically — try pushing again. " +
+            "Or Settings → Hermes → Clear stuck operator runs. Check Pulse for briefings.",
             ok,
             lastId,
             null);
@@ -139,9 +189,13 @@ public static class OutlookPushCoordinator
         DateTimeOffset? notBeforeUtc = null,
         Action<string, string>? progress = null,
         CancellationToken ct = default,
-        int timeoutSeconds = 120)
+        int timeoutSeconds = 120,
+        Action? onFloorReady = null)
     {
         var floor = notBeforeUtc ?? DateTimeOffset.UtcNow.AddSeconds(-5);
+        var waitStarted = DateTimeOffset.UtcNow;
+        var idleTick = 0;
+        var floorSignaled = false;
         try
         {
             using var client = new CoreHostClient(settings, store);
@@ -149,13 +203,18 @@ public static class OutlookPushCoordinator
             while (DateTimeOffset.UtcNow < deadline)
             {
                 ct.ThrowIfCancellationRequested();
+                var elapsed = DateTimeOffset.UtcNow - waitStarted;
                 var dash = await client.GetOperatorDashboardAsync(ct).ConfigureAwait(true);
                 if (dash is null)
                 {
+                    progress?.Invoke(
+                        TitleForElapsed(subject, elapsed),
+                        HermesThinkingCopy.DutyBannerDetail(elapsed, idleTick++, liveProgress: null));
                     await Task.Delay(1500, ct).ConfigureAwait(true);
                     continue;
                 }
 
+                var matchedRunning = false;
                 foreach (var run in dash.RecentRuns)
                 {
                     if (!run.TriggerKind.Contains("email", StringComparison.OrdinalIgnoreCase))
@@ -174,11 +233,17 @@ public static class OutlookPushCoordinator
                         continue;
                     }
 
-                    if (!string.IsNullOrWhiteSpace(run.BriefingSummary)
-                        && (run.Status.Equals("completed", StringComparison.OrdinalIgnoreCase)
-                            || run.Status.Equals("skipped", StringComparison.OrdinalIgnoreCase)
-                            || run.Status.Equals("failed", StringComparison.OrdinalIgnoreCase)))
+                    if (run.Status.Equals("completed", StringComparison.OrdinalIgnoreCase)
+                        || run.Status.Equals("skipped", StringComparison.OrdinalIgnoreCase)
+                        || run.Status.Equals("failed", StringComparison.OrdinalIgnoreCase))
                     {
+                        if (string.IsNullOrWhiteSpace(run.BriefingSummary))
+                        {
+                            return run.Status.Equals("completed", StringComparison.OrdinalIgnoreCase)
+                                ? $"Done — “{subject ?? "mail"}” organized."
+                                : $"[{run.Status}] Hermes finished without a briefing text.";
+                        }
+
                         if (run.Status.Equals("completed", StringComparison.OrdinalIgnoreCase)
                             && (run.BriefingSummary.Contains("Nothing material to surface", StringComparison.OrdinalIgnoreCase)
                                 || run.BriefingSummary.Equals("[SILENT]", StringComparison.OrdinalIgnoreCase)))
@@ -191,17 +256,42 @@ public static class OutlookPushCoordinator
                             : $"[{run.Status}] {run.BriefingSummary}";
                     }
 
-                    // Running run matched this email — keep waiting (opened at ingest for webhook path too).
-                    if (run.Status.Equals("running", StringComparison.OrdinalIgnoreCase)
-                        && RunMatchesEmail(run, emailId, subject))
+                    if (run.Status.Equals("running", StringComparison.OrdinalIgnoreCase))
                     {
-                        progress?.Invoke(
-                            $"Hermes is organizing “{subject ?? "mail"}”…",
-                            "Still working — stay on the Workbench.");
+                        matchedRunning = true;
+                        SignalFloorReadyOnce(ref floorSignaled, elapsed, onFloorReady);
+                        var detail = HermesThinkingCopy.DutyBannerDetail(
+                            elapsed,
+                            idleTick,
+                            liveProgress: run.BriefingSummary);
+                        progress?.Invoke(TitleForElapsed(subject, elapsed), detail);
                     }
                 }
 
+                if (!matchedRunning)
+                {
+                    SignalFloorReadyOnce(ref floorSignaled, elapsed, onFloorReady);
+                    progress?.Invoke(
+                        TitleForElapsed(subject, elapsed),
+                        HermesThinkingCopy.DutyBannerDetail(elapsed, idleTick, liveProgress: null));
+                }
+
+                idleTick++;
                 await Task.Delay(1500, ct).ConfigureAwait(true);
+            }
+
+            try
+            {
+                var cleared = await client.ClearStuckOperatorRunsAsync(ct).ConfigureAwait(true);
+                if (cleared > 0)
+                {
+                    progress?.Invoke(
+                        $"Pushed “{subject ?? "mail"}” — cleared {cleared} stuck Hermes run(s).",
+                        "Next push should not stall. Check Pulse if a briefing already posted.");
+                }
+            }
+            catch
+            {
             }
         }
         catch (OperationCanceledException)
@@ -210,10 +300,31 @@ public static class OutlookPushCoordinator
         }
         catch
         {
-            // fall through
         }
 
         return null;
+    }
+
+    private static string TitleForElapsed(string? subject, TimeSpan elapsed) =>
+        elapsed.TotalSeconds >= 12
+            ? $"“{subject ?? "mail"}” is in Orbit — Hermes finishing notes…"
+            : $"Pushed “{subject ?? "mail"}” — Hermes is working…";
+
+    private static void SignalFloorReadyOnce(ref bool signaled, TimeSpan elapsed, Action? onFloorReady)
+    {
+        if (signaled || onFloorReady is null || elapsed.TotalSeconds < 8)
+        {
+            return;
+        }
+
+        signaled = true;
+        try
+        {
+            onFloorReady();
+        }
+        catch
+        {
+        }
     }
 
     private static bool RunMatchesEmail(OperatorRunVm run, string? emailId, string? subject)

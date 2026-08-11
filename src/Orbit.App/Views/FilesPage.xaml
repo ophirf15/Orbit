@@ -86,11 +86,17 @@
                 <ListView.ItemTemplate>
                     <DataTemplate>
                         <StackPanel Padding="4,6" Spacing="2">
-                            <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="{Binding DisplayName}" />
+                            <TextBlock
+                                Style="{StaticResource BodyStrongTextBlockStyle}"
+                                Text="{Binding RelativePath}"
+                                TextTrimming="CharacterEllipsis"
+                                TextWrapping="NoWrap"
+                                ToolTipService.ToolTip="{Binding Path}" />
                             <TextBlock
                                 Opacity="0.7"
                                 Style="{StaticResource CaptionTextBlockStyle}"
-                                Text="{Binding Path}"
+                                Text="{Binding DisplayName}"
+                                TextTrimming="CharacterEllipsis"
                                 TextWrapping="NoWrap" />
                         </StackPanel>
                     </DataTemplate>

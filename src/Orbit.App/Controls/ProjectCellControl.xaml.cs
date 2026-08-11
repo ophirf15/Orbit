@@ -63,6 +63,8 @@ public sealed partial class ProjectCellControl : UserControl
 
     public event EventHandler<ProjectCellVm>? ArchiveProjectRequested;
 
+    public event EventHandler<ProjectCellVm>? MergeProjectRequested;
+
     public event EventHandler<ProjectAccentRequestedEventArgs>? AccentColorRequested;
 
     public event EventHandler<ProjectCellVm>? SetHomeFolderRequested;
@@ -200,6 +202,11 @@ public sealed partial class ProjectCellControl : UserControl
         if (cell.HasSuggestion)
         {
             bits.Add(cell.SuggestionText);
+        }
+
+        if (!string.IsNullOrWhiteSpace(cell.HygieneText))
+        {
+            bits.Add(cell.HygieneText);
         }
 
         if (!string.IsNullOrWhiteSpace(cell.RecentText))
@@ -507,6 +514,8 @@ public sealed partial class ProjectCellControl : UserControl
 
             var archive = new MenuFlyoutItem { Text = "Archive project…" };
             archive.Click += (_, _) => ArchiveProjectRequested?.Invoke(this, _cell);
+            var merge = new MenuFlyoutItem { Text = "Merge project into…" };
+            merge.Click += (_, _) => MergeProjectRequested?.Invoke(this, _cell);
             var setHome = new MenuFlyoutItem { Text = "Set home folder…" };
             setHome.Click += (_, _) => SetHomeFolderRequested?.Invoke(this, _cell);
             var openHome = new MenuFlyoutItem { Text = "Open home folder" };
@@ -516,6 +525,7 @@ public sealed partial class ProjectCellControl : UserControl
             menu.Items.Add(setHome);
             menu.Items.Add(openHome);
             menu.Items.Add(colors);
+            menu.Items.Add(merge);
             menu.Items.Add(archive);
         }
 

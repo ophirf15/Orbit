@@ -183,44 +183,30 @@ public sealed partial class ShellPage : Page
         args.Handled = true;
     }
 
-    private async void OnPushOutlook(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    private void OnPushOutlook(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
         args.Handled = true;
-        await PushOutlookSelectionAsync();
+        App.OutlookPush.EnqueueHandoff("hotkey");
     }
 
-    public async Task PushOutlookSelectionAsync()
+    /// <summary>In-app entry points share the same snapshot queue as the Outlook button.</summary>
+    public Task PushOutlookSelectionAsync(bool promptForMemo = true)
     {
-        try
+        _ = promptForMemo;
+        App.OutlookPush.EnqueueHandoff("in-app");
+        return Task.CompletedTask;
+    }
+
+    public async Task ReloadWorkbenchAfterIngestAsync()
+    {
+        if (ContentFrame.CurrentSourcePageType != typeof(WorkbenchPage))
         {
-            var result = await OutlookPushCoordinator.PushSelectedAsync(
-                App.Settings,
-                App.SettingsStore,
-                progress: (title, detail) => ShowDutyBanner(title, TruncateBanner(detail, 600), InfoBarSeverity.Informational));
-
-            ShowDutyBanner(
-                result.StatusLine,
-                TruncateBanner(result.Detail, 700),
-                result.Ok
-                    ? (string.IsNullOrWhiteSpace(result.Briefing) ? InfoBarSeverity.Informational : InfoBarSeverity.Success)
-                    : InfoBarSeverity.Error);
-
-            if (result.Ok)
-            {
-                if (ContentFrame.CurrentSourcePageType != typeof(WorkbenchPage))
-                {
-                    NavigateTo(CommandCatalog.Pulse);
-                }
-
-                if (ContentFrame.Content is WorkbenchPage workbench)
-                {
-                    await workbench.ReloadAfterExternalIngestAsync();
-                }
-            }
+            NavigateTo(CommandCatalog.Pulse);
         }
-        catch (Exception ex)
+
+        if (ContentFrame.Content is WorkbenchPage workbench)
         {
-            ShowDutyBanner("Outlook push failed", ex.Message, InfoBarSeverity.Error);
+            await workbench.ReloadAfterExternalIngestAsync().ConfigureAwait(true);
         }
     }
 
@@ -232,39 +218,81 @@ public sealed partial class ShellPage : Page
         DutyInfoBar.IsOpen = true;
     }
 
-    private static string TruncateBanner(string text, int max)
-    {
-        var flat = text.Replace("\r\n", " ").Replace('\n', ' ').Trim();
-        return flat.Length <= max ? flat : flat[..max] + "…";
-    }
-
     private void OnOpenSettings(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
         NavigateTo(CommandCatalog.Settings);
         args.Handled = true;
     }
 
-    private void CommandPaletteHost_CommandInvoked(object sender, string commandId)
+    private void CommandPaletteHost_CommandInvoked(object sender, ShellCommand command)
     {
-        if (commandId == CommandCatalog.ToggleTheme)
+        if (command.Id == CommandCatalog.ToggleTheme)
         {
             ToggleThemeFromCommand();
             return;
         }
 
-        if (commandId == CommandCatalog.QuickCapture)
+        if (command.Id == CommandCatalog.QuickCapture)
         {
             FocusQuickCapture();
             return;
         }
 
-        if (commandId == CommandCatalog.PushOutlook)
+        if (command.Id == CommandCatalog.PushOutlook)
         {
             _ = PushOutlookSelectionAsync();
             return;
         }
 
-        NavigateTo(commandId);
+        if (command.Id == CommandCatalog.SearchRun)
+        {
+            NavigateTo(CommandCatalog.Search, command.Payload ?? string.Empty);
+            return;
+        }
+
+        if (command.Id == CommandCatalog.SearchHit)
+        {
+            OpenSearchHit(command.Payload);
+            return;
+        }
+
+        NavigateTo(command.Id);
+    }
+
+    private void OpenSearchHit(string? payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload))
+        {
+            NavigateTo(CommandCatalog.Search);
+            return;
+        }
+
+        var parts = payload.Split('|');
+        var entityType = parts.Length > 0 ? parts[0] : string.Empty;
+        var entityId = parts.Length > 1 ? parts[1] : string.Empty;
+        var projectId = parts.Length > 2 ? parts[2] : string.Empty;
+
+        if (string.Equals(entityType, "task", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(entityType, "subtask", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(entityType, "concern", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!string.IsNullOrWhiteSpace(entityId))
+            {
+                OpenConcernBrief(entityId);
+                return;
+            }
+        }
+
+        if (string.Equals(entityType, "project", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(entityId))
+        {
+            NavigateTo(CommandCatalog.Pulse, entityId);
+            return;
+        }
+
+        // Files / emails / unknown — open Search with a useful query.
+        var query = !string.IsNullOrWhiteSpace(entityId) ? entityId : projectId;
+        NavigateTo(CommandCatalog.Search, string.IsNullOrWhiteSpace(query) ? null : query);
     }
 
     private void CommandBarSearch_Click(object sender, RoutedEventArgs e) => OpenCommandPalette();

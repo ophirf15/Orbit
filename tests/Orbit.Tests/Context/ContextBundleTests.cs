@@ -4,6 +4,7 @@ using Orbit.Infrastructure.Context;
 using Orbit.Infrastructure.Data;
 using Orbit.Infrastructure.Data.Demo;
 using Orbit.Infrastructure.Email;
+using Orbit.Infrastructure.Operator;
 using Orbit.Infrastructure.Suggestions;
 
 namespace Orbit.Tests.Context;
@@ -176,6 +177,149 @@ public sealed class ContextBundleTests
             Assert.Equal(SuggestionTypes.DisambiguateEmailClaim, reader.GetString(0));
             Assert.Equal(SuggestionStatuses.Pending, reader.GetString(1));
         }
+
+        using (var cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = "SELECT summary, payload_json FROM agent_suggestions WHERE id = $id;";
+            cmd.Parameters.AddWithValue("$id", result.SuggestionId!);
+            using var reader = cmd.ExecuteReader();
+            Assert.True(reader.Read());
+            var summary = reader.GetString(0);
+            var payload = reader.GetString(1);
+            Assert.Contains("Ambiguous email", summary, StringComparison.Ordinal);
+            Assert.Contains("Need schedule", summary, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("\"subject\"", payload, StringComparison.Ordinal);
+            Assert.Contains("\"snippet\"", payload, StringComparison.Ordinal);
+            Assert.Contains("Please schedule", payload, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
+    public void ClaimSplitter_ExplicitProjectLink_SkipsAmbiguousSuggestion()
+    {
+        using var temp = new TempDb();
+        var factory = OpenMigrated(temp);
+        var ids = new DemoGraphSeed(factory).Seed();
+
+        var emailId = Guid.NewGuid().ToString("D");
+        InsertBareEmail(factory, emailId, "PG&E PMA");
+        LinkEmailExplicit(factory, emailId, ids.HarborProjectId);
+
+        var splitter = new MultiProjectClaimSplitter(factory, new SuggestionStore(factory));
+        var result = splitter.ProcessEmail(
+            emailId,
+            "Please confirm the account and schedule service for next week.");
+
+        Assert.False(result.WasAmbiguous);
+        Assert.Null(result.SuggestionId);
+        Assert.Contains(ids.HarborProjectId, result.LinkedProjectIds);
+
+        using var connection = factory.CreateConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            """
+            SELECT COUNT(*) FROM agent_suggestions
+            WHERE suggestion_type = $type AND payload_json LIKE $needle;
+            """;
+        cmd.Parameters.AddWithValue("$type", SuggestionTypes.DisambiguateEmailClaim);
+        cmd.Parameters.AddWithValue("$needle", "%" + emailId + "%");
+        Assert.Equal(0, Convert.ToInt32(cmd.ExecuteScalar()));
+    }
+
+    [Fact]
+    public void SuggestMergesFromEmail_ExplicitProject_EmitsNothing()
+    {
+        using var temp = new TempDb();
+        var factory = OpenMigrated(temp);
+        var ids = new DemoGraphSeed(factory).Seed();
+        SeedOpenTask(factory, ids.HarborProjectId, "Comcast modem install");
+        SeedOpenTask(factory, ids.HarborProjectId, "Send CAA lease files");
+
+        var emailId = Guid.NewGuid().ToString("D");
+        InsertBareEmail(factory, emailId, "Re: 707 Leahy PG&E PMA");
+        LinkEmailExplicit(factory, emailId, ids.HarborProjectId);
+
+        var engine = new TaskRelationshipEngine(factory, new SuggestionStore(factory));
+        var created = engine.SuggestMergesFromEmail(
+            emailId,
+            "Please review the PG&E account and confirm utility billing for the property.");
+
+        Assert.Empty(created);
+    }
+
+    [Fact]
+    public void AcceptReject_MergeSuggestion_WritesOperatorMemory()
+    {
+        using var temp = new TempDb();
+        var factory = OpenMigrated(temp);
+        var ids = new DemoGraphSeed(factory).Seed();
+        var memory = new OperatorMemoryStore(factory);
+        var suggestions = new SuggestionStore(factory, memory);
+
+        var taskId = SeedOpenTask(factory, ids.HarborProjectId, "Utility follow-up");
+        var suggestion = suggestions.Create(new CreateSuggestionRequest
+        {
+            SuggestionType = SuggestionTypes.MergeIntoTask,
+            Summary = "Email may answer Utility follow-up",
+            PayloadJson = $$"""{"taskId":"{{taskId}}","text":"billing note","field":"body","sourceType":"email","sourceId":"e1"}""",
+            ProjectId = ids.HarborProjectId,
+            TaskId = taskId,
+            Confidence = 0.5,
+        });
+
+        suggestions.Reject(suggestion.Id, actor: "test");
+        var facts = EmailRelationMemory.ListRecentFactLines(memory, limit: 5);
+        Assert.Contains(facts, f => f.Contains("NOT related", StringComparison.OrdinalIgnoreCase));
+
+        var accept = suggestions.Create(new CreateSuggestionRequest
+        {
+            SuggestionType = SuggestionTypes.MergeIntoTask,
+            Summary = "Email may answer Utility follow-up again",
+            PayloadJson = $$"""{"taskId":"{{taskId}}","text":"billing note 2","field":"body","sourceType":"email","sourceId":"e2"}""",
+            ProjectId = ids.HarborProjectId,
+            TaskId = taskId,
+            Confidence = 0.55,
+        });
+        suggestions.Accept(accept.Id, actor: "test");
+        facts = EmailRelationMemory.ListRecentFactLines(memory, limit: 10);
+        Assert.Contains(facts, f => f.Contains("related to task", StringComparison.OrdinalIgnoreCase)
+                                    && !f.Contains("NOT related", StringComparison.Ordinal));
+    }
+
+    private static void LinkEmailExplicit(SqliteConnectionFactory factory, string emailId, string projectId)
+    {
+        var now = DateTime.UtcNow.ToString("O");
+        using var connection = factory.CreateConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            """
+            INSERT INTO email_project_links (id, email_artifact_id, project_id, created_at, confidence, match_reason)
+            VALUES ($id, $email, $project, $t, 1.0, 'explicit');
+            """;
+        cmd.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("D"));
+        cmd.Parameters.AddWithValue("$email", emailId);
+        cmd.Parameters.AddWithValue("$project", projectId);
+        cmd.Parameters.AddWithValue("$t", now);
+        cmd.ExecuteNonQuery();
+    }
+
+    private static string SeedOpenTask(SqliteConnectionFactory factory, string projectId, string title)
+    {
+        var now = DateTime.UtcNow.ToString("O");
+        var id = Guid.NewGuid().ToString("D");
+        using var connection = factory.CreateConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            """
+            INSERT INTO tasks (id, project_id, title, status, next_action, created_at, updated_at)
+            VALUES ($id, $project, $title, 'active', $title, $t, $t);
+            """;
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.Parameters.AddWithValue("$project", projectId);
+        cmd.Parameters.AddWithValue("$title", title);
+        cmd.Parameters.AddWithValue("$t", now);
+        cmd.ExecuteNonQuery();
+        return id;
     }
 
     private static void InsertBareEmail(SqliteConnectionFactory factory, string emailId, string subject)

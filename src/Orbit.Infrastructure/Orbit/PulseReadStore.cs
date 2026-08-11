@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Orbit.Core.Data;
 using Orbit.Infrastructure.Data;
+using Orbit.Infrastructure.Email;
 
 namespace Orbit.Infrastructure.Pulse;
 
@@ -33,6 +34,29 @@ public sealed class PulseConcernRecord
     public string? BodyExcerpt { get; init; }
 
     public required string UpdatedAt { get; init; }
+
+    public string? SourceKind { get; init; }
+
+    public double? SourceConfidence { get; init; }
+
+    public string? SourceMatchReason { get; init; }
+}
+
+public sealed class PulseUnmatchedMailRecord
+{
+    public required string SuggestionId { get; init; }
+
+    public required string Summary { get; init; }
+
+    public string? EmailId { get; init; }
+
+    public string? Subject { get; init; }
+
+    public string? Snippet { get; init; }
+
+    public double? Confidence { get; init; }
+
+    public required string CreatedAt { get; init; }
 }
 
 public sealed class OrbitProjectRecord
@@ -50,6 +74,88 @@ public sealed class OrbitProjectRecord
     public int OpenConcernCount { get; init; }
 
     public string? TopNextAction { get; init; }
+
+    public bool DossierEmpty { get; init; } = true;
+
+    public bool MissingNextAction { get; init; }
+}
+
+public sealed class PulseBriefingMeetingRecord
+{
+    public required string Id { get; init; }
+
+    public required string Title { get; init; }
+
+    public string? StartsAt { get; init; }
+
+    public string? SourceName { get; init; }
+}
+
+public sealed class PulseBriefingActionRecord
+{
+    public required string TaskId { get; init; }
+
+    public required string ProjectId { get; init; }
+
+    public required string ProjectName { get; init; }
+
+    public required string Title { get; init; }
+
+    public string? NextAction { get; init; }
+}
+
+public sealed class PulseBriefingWaitingRecord
+{
+    public required string TaskId { get; init; }
+
+    public required string ProjectName { get; init; }
+
+    public required string Title { get; init; }
+
+    public required string Status { get; init; }
+
+    public required string UpdatedAt { get; init; }
+
+    public int AgeHours { get; init; }
+}
+
+public sealed class PulseBriefingAlertRecord
+{
+    public required string Kind { get; init; }
+
+    public required string Message { get; init; }
+
+    public string? ProjectId { get; init; }
+}
+
+public sealed class PulseBriefingChangeRecord
+{
+    public long Revision { get; init; }
+
+    public required string EntityType { get; init; }
+
+    public required string EntityId { get; init; }
+
+    public required string ChangeKind { get; init; }
+
+    public string? SourceEvent { get; init; }
+
+    public required string CreatedAt { get; init; }
+}
+
+public sealed class PulseBriefingStrip
+{
+    public IReadOnlyList<PulseBriefingMeetingRecord> UpcomingMeetings { get; init; } = [];
+
+    public IReadOnlyList<PulseBriefingActionRecord> TopActions { get; init; } = [];
+
+    public IReadOnlyList<PulseBriefingWaitingRecord> WaitingOn { get; init; } = [];
+
+    public IReadOnlyList<PulseBriefingAlertRecord> Alerts { get; init; } = [];
+
+    public IReadOnlyList<PulseBriefingChangeRecord> RecentChanges { get; init; } = [];
+
+    public long ChangeCursor { get; init; }
 }
 
 public sealed class PulseView
@@ -62,7 +168,11 @@ public sealed class PulseView
 
     public required IReadOnlyList<PulseConcernRecord> Concerns { get; init; }
 
+    public IReadOnlyList<PulseUnmatchedMailRecord> UnmatchedMail { get; init; } = [];
+
     public bool BriefIsSynthetic { get; init; }
+
+    public PulseBriefingStrip? Briefing { get; init; }
 }
 
 public sealed class PulseReadStore
@@ -82,7 +192,10 @@ public sealed class PulseReadStore
         var concerns = LoadConcerns();
         var brief = snapshot?.DayBrief;
         var synthetic = false;
-        if (string.IsNullOrWhiteSpace(brief))
+        if (string.IsNullOrWhiteSpace(brief)
+            || brief.Trim().Equals("[SILENT]", StringComparison.OrdinalIgnoreCase)
+            || brief.Trim().Equals("SILENT", StringComparison.OrdinalIgnoreCase)
+            || brief.Trim().Equals("Nothing material to surface.", StringComparison.OrdinalIgnoreCase))
         {
             brief = SynthesizeDayBrief(concerns);
             synthetic = true;
@@ -96,6 +209,7 @@ public sealed class PulseReadStore
                 : "Hermes pulse refresh available via /v1/pulse/refresh.",
             GeneratedAt = generatedAt,
             Concerns = concerns,
+            UnmatchedMail = LoadUnmatchedMail(),
             BriefIsSynthetic = synthetic,
         };
     }
@@ -187,7 +301,15 @@ public sealed class PulseReadStore
                        AND t.status NOT IN ($complete, $archived)
                      ORDER BY t.updated_at DESC
                      LIMIT 1
-                   ) AS top_next
+                   ) AS top_next,
+                   p.dossier_json,
+                   (
+                     SELECT COUNT(*) FROM tasks t
+                     WHERE t.project_id = p.id
+                       AND t.archived_at IS NULL
+                       AND t.status NOT IN ($complete, $archived)
+                       AND (t.next_action IS NULL OR trim(t.next_action) = '')
+                   ) AS missing_next
             FROM projects p
             WHERE p.archived_at IS NULL AND p.in_orbit = 1
             ORDER BY p.name COLLATE NOCASE;
@@ -217,7 +339,15 @@ public sealed class PulseReadStore
                        AND t.status NOT IN ($complete, $archived)
                      ORDER BY t.updated_at DESC
                      LIMIT 1
-                   ) AS top_next
+                   ) AS top_next,
+                   p.dossier_json,
+                   (
+                     SELECT COUNT(*) FROM tasks t
+                     WHERE t.project_id = p.id
+                       AND t.archived_at IS NULL
+                       AND t.status NOT IN ($complete, $archived)
+                       AND (t.next_action IS NULL OR trim(t.next_action) = '')
+                   ) AS missing_next
             FROM projects p
             WHERE p.archived_at IS NULL
             ORDER BY p.name COLLATE NOCASE;
@@ -376,7 +506,8 @@ public sealed class PulseReadStore
         using var cmd = connection.CreateCommand();
         cmd.CommandText =
             """
-            SELECT t.id, t.project_id, p.name, t.title, t.status, t.next_action, t.body, t.updated_at
+            SELECT t.id, t.project_id, p.name, t.title, t.status, t.next_action, t.body, t.updated_at,
+                   t.source_kind, t.source_confidence, t.source_match_reason
             FROM tasks t
             INNER JOIN projects p ON p.id = t.project_id
             WHERE t.archived_at IS NULL
@@ -389,6 +520,123 @@ public sealed class PulseReadStore
         cmd.Parameters.AddWithValue("$archived", TaskStatuses.Archived);
         cmd.Parameters.AddWithValue("$scopeAll", scopeInOrbit ? 0 : 1);
         return ReadConcerns(cmd);
+    }
+
+    private IReadOnlyList<PulseUnmatchedMailRecord> LoadUnmatchedMail()
+    {
+        using var connection = _factory.CreateConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            """
+            SELECT s.id, s.summary, s.payload_json, s.confidence, s.created_at,
+                   e.subject, e.body_preview
+            FROM agent_suggestions s
+            LEFT JOIN email_artifacts e
+              ON e.id = json_extract(s.payload_json, '$.emailId')
+             AND e.archived_at IS NULL
+            WHERE s.archived_at IS NULL
+              AND s.status = 'pending'
+              AND s.suggestion_type = $type
+            ORDER BY s.created_at DESC
+            LIMIT 40;
+            """;
+        cmd.Parameters.AddWithValue("$type", SuggestionTypes.DisambiguateEmailClaim);
+        var list = new List<PulseUnmatchedMailRecord>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            var payload = reader.IsDBNull(2) ? null : reader.GetString(2);
+            var emailId = TryReadEmailId(payload);
+            var payloadSubject = TryReadPayloadString(payload, "subject");
+            var payloadSnippet = TryReadPayloadString(payload, "snippet");
+            var joinedSubject = reader.IsDBNull(5) ? null : reader.GetString(5);
+            var joinedPreview = reader.IsDBNull(6) ? null : reader.GetString(6);
+            var subject = FirstNonEmpty(payloadSubject, joinedSubject);
+            var snippet = FirstNonEmpty(
+                payloadSnippet,
+                MultiProjectClaimSplitter.BuildSnippet(subject, joinedPreview, null));
+            var summary = reader.GetString(1);
+            if (string.Equals(summary, "Ambiguous email claim — pick a project", StringComparison.Ordinal)
+                && (!string.IsNullOrWhiteSpace(subject) || !string.IsNullOrWhiteSpace(snippet)))
+            {
+                summary = MultiProjectClaimSplitter.BuildAmbiguousSummary(subject, snippet);
+            }
+
+            list.Add(new PulseUnmatchedMailRecord
+            {
+                SuggestionId = reader.GetString(0),
+                Summary = summary,
+                EmailId = emailId,
+                Subject = subject,
+                Snippet = string.IsNullOrWhiteSpace(snippet) ? null : snippet,
+                Confidence = reader.IsDBNull(3) ? null : reader.GetDouble(3),
+                CreatedAt = reader.GetString(4),
+            });
+        }
+
+        return list;
+    }
+
+    private static string? TryReadPayloadString(string? payloadJson, string property)
+    {
+        if (string.IsNullOrWhiteSpace(payloadJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(payloadJson);
+            if (doc.RootElement.TryGetProperty(property, out var el)
+                && el.ValueKind == JsonValueKind.String)
+            {
+                var value = el.GetString();
+                return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+            }
+        }
+        catch (JsonException)
+        {
+            // ignore malformed payloads
+        }
+
+        return null;
+    }
+
+    private static string? FirstNonEmpty(params string?[] values)
+    {
+        foreach (var v in values)
+        {
+            if (!string.IsNullOrWhiteSpace(v))
+            {
+                return v.Trim();
+            }
+        }
+
+        return null;
+    }
+
+    private static string? TryReadEmailId(string? payloadJson)
+    {
+        if (string.IsNullOrWhiteSpace(payloadJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(payloadJson);
+            if (doc.RootElement.TryGetProperty("emailId", out var email)
+                && email.ValueKind == JsonValueKind.String)
+            {
+                return email.GetString();
+            }
+        }
+        catch (JsonException)
+        {
+            // ignore malformed payloads
+        }
+
+        return null;
     }
 
     private static List<PulseConcernRecord> ReadConcerns(SqliteCommand cmd)
@@ -408,6 +656,9 @@ public sealed class PulseReadStore
                 NextAction = reader.IsDBNull(5) ? null : reader.GetString(5),
                 BodyExcerpt = ExcerptBody(body),
                 UpdatedAt = reader.GetString(7),
+                SourceKind = reader.FieldCount > 8 && !reader.IsDBNull(8) ? reader.GetString(8) : null,
+                SourceConfidence = reader.FieldCount > 9 && !reader.IsDBNull(9) ? reader.GetDouble(9) : null,
+                SourceMatchReason = reader.FieldCount > 10 && !reader.IsDBNull(10) ? reader.GetString(10) : null,
             });
         }
 
@@ -420,6 +671,10 @@ public sealed class PulseReadStore
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
         {
+            var dossierEmpty = ProjectDossier.IsJsonStructurallyEmpty(
+                reader.FieldCount > 7 && !reader.IsDBNull(7) ? reader.GetString(7) : null);
+            var missingNextCount = reader.FieldCount > 8 && !reader.IsDBNull(8) ? (int)reader.GetInt64(8) : 0;
+            var openCount = reader.FieldCount > 5 && !reader.IsDBNull(5) ? (int)reader.GetInt64(5) : 0;
             list.Add(new OrbitProjectRecord
             {
                 Id = reader.GetString(0),
@@ -427,8 +682,10 @@ public sealed class PulseReadStore
                 Summary = reader.IsDBNull(2) ? null : reader.GetString(2),
                 Status = reader.GetString(3),
                 InOrbit = !reader.IsDBNull(4) && reader.GetInt64(4) != 0,
-                OpenConcernCount = reader.FieldCount > 5 && !reader.IsDBNull(5) ? (int)reader.GetInt64(5) : 0,
+                OpenConcernCount = openCount,
                 TopNextAction = reader.FieldCount > 6 && !reader.IsDBNull(6) ? reader.GetString(6) : null,
+                DossierEmpty = dossierEmpty,
+                MissingNextAction = missingNextCount > 0 || (openCount > 0 && reader.FieldCount > 6 && reader.IsDBNull(6)),
             });
         }
 

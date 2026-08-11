@@ -20,6 +20,7 @@
     <InformationalVersion>0.1.1</InformationalVersion>
     <!-- Embeds into Orbit.App.exe so Start/taskbar/shortcuts get the Orbit glyph. -->
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
   </PropertyGroup>
 
   <ItemGroup>
@@ -94,4 +95,34 @@
     <PublishTrimmed Condition="'$(Configuration)' == 'Debug'">False</PublishTrimmed>
     <PublishTrimmed Condition="'$(Configuration)' != 'Debug'">True</PublishTrimmed>
   </PropertyGroup>
+
+  <!--
+    Stage thin Outlook launcher next to the app so Settings → Install works in
+    local F5 builds (pack-installer.ps1 also publishes this folder for Setup).
+  -->
+  <Target Name="StageOutlookLauncher" AfterTargets="Build">
+    <PropertyGroup>
+      <_OutlookLauncherProj>$(MSBuildThisFileDirectory)..\Orbit.OutlookLauncher\Orbit.OutlookLauncher.csproj</_OutlookLauncherProj>
+      <_OutlookLauncherOut Condition="Exists('$(MSBuildThisFileDirectory)..\Orbit.OutlookLauncher\bin\$(Platform)\$(Configuration)\net48\Orbit.OutlookLauncher.dll')">$(MSBuildThisFileDirectory)..\Orbit.OutlookLauncher\bin\$(Platform)\$(Configuration)\net48</_OutlookLauncherOut>
+      <_OutlookLauncherOut Condition="'$(_OutlookLauncherOut)' == ''">$(MSBuildThisFileDirectory)..\Orbit.OutlookLauncher\bin\$(Configuration)\net48</_OutlookLauncherOut>
+    </PropertyGroup>
+    <MSBuild
+      Projects="$(_OutlookLauncherProj)"
+      Targets="Build"
+      Properties="Configuration=$(Configuration);Platform=$(Platform)"
+      Condition="Exists('$(_OutlookLauncherProj)')" />
+    <PropertyGroup>
+      <_OutlookLauncherOut Condition="Exists('$(MSBuildThisFileDirectory)..\Orbit.OutlookLauncher\bin\$(Platform)\$(Configuration)\net48\Orbit.OutlookLauncher.dll')">$(MSBuildThisFileDirectory)..\Orbit.OutlookLauncher\bin\$(Platform)\$(Configuration)\net48</_OutlookLauncherOut>
+      <_OutlookLauncherOut Condition="!Exists('$(_OutlookLauncherOut)\Orbit.OutlookLauncher.dll')">$(MSBuildThisFileDirectory)..\Orbit.OutlookLauncher\bin\$(Configuration)\net48</_OutlookLauncherOut>
+    </PropertyGroup>
+    <ItemGroup Condition="Exists('$(_OutlookLauncherOut)\Orbit.OutlookLauncher.dll')">
+      <_OutlookLauncherFiles Include="$(_OutlookLauncherOut)\**\*" />
+    </ItemGroup>
+    <MakeDir Directories="$(OutDir)outlook-launcher" Condition="'@(_OutlookLauncherFiles)' != ''" />
+    <Copy
+      SourceFiles="@(_OutlookLauncherFiles)"
+      DestinationFolder="$(OutDir)outlook-launcher\%(RecursiveDir)"
+      SkipUnchangedFiles="true"
+      Condition="'@(_OutlookLauncherFiles)' != ''" />
+  </Target>
 </Project>

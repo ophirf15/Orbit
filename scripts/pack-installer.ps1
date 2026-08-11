@@ -5,6 +5,7 @@
 
 .DESCRIPTION
   Publishes Orbit.App + Orbit.Core.Host as self-contained win-x64 into one folder,
+  plus Orbit.Mcp into publish\orbit-mcp (Hermes MCP stdio bridge),
   then compiles packaging/Orbit.iss into artifacts/installer/Orbit-Setup-<version>.exe.
 
   This is the takeaway first-install path for a clean PC (wizard UI).
@@ -170,6 +171,26 @@ if (-not $SkipPublish) {
         throw "Orbit.Mcp publish failed with exit $LASTEXITCODE"
     }
 
+    $launcherProject = Join-Path $root "src\Orbit.OutlookLauncher\Orbit.OutlookLauncher.csproj"
+    $launcherOut = Join-Path $publishDir "outlook-launcher"
+    Write-Host "Building Orbit.OutlookLauncher (net48) into publish\outlook-launcher..."
+    if (Test-Path $launcherOut) {
+        Remove-Item -Recurse -Force $launcherOut
+    }
+    New-Item -ItemType Directory -Force -Path $launcherOut | Out-Null
+    & $dotnet @(
+        "publish", $launcherProject,
+        "-c", $Configuration,
+        "-o", $launcherOut
+    )
+    if ($LASTEXITCODE -ne 0) {
+        throw "Orbit.OutlookLauncher publish failed with exit $LASTEXITCODE"
+    }
+    $launcherDll = Join-Path $launcherOut "Orbit.OutlookLauncher.dll"
+    if (-not (Test-Path $launcherDll)) {
+        throw "Missing $launcherDll after Outlook launcher publish"
+    }
+
     $appExe = Join-Path $publishDir "Orbit.App.exe"
     $hostExe = Join-Path $publishDir "Orbit.Core.Host.exe"
     $mcpExe = Join-Path $mcpOut "Orbit.Mcp.exe"
@@ -194,13 +215,31 @@ if (-not $SkipPublish) {
         "Orbit.App.exe          - WinUI shell",
         "Orbit.Core.Host.exe    - local API (started by the app)",
         "orbit-mcp\             - Orbit.Mcp.exe (Hermes MCP stdio bridge → Core)",
+        "outlook-launcher\      - Classic Outlook Send to Orbit ribbon (Settings → Install)",
         "docs/hermes/           - SOUL, skills, cron/webhook manifests (Connect Hermes)",
         "",
         "Data lives under %LocalAppData%\Orbit\ after first launch.",
         "Connect Hermes copies orbit-mcp into %LocalAppData%\Orbit\orbit-mcp\ and wires Hermes config.",
+        "Outlook add-in: Settings → Mail → Install / Update (registers HKCU COM; close Outlook to refresh DLL).",
         "Hermes (agent) is optional and separate - see Settings > Hermes after install.",
         "After install: Settings → Connect Hermes so skills + MCP sync into HERMES_HOME."
     ) | Set-Content -Path (Join-Path $publishDir "INSTALL-README.txt") -Encoding utf8
+}
+
+# Always require orbit-mcp payload (including -SkipPublish) so a stale publish folder cannot ship.
+$mcpGateDir = Join-Path $publishDir "orbit-mcp"
+$mcpGateExe = Join-Path $mcpGateDir "Orbit.Mcp.exe"
+$mcpGateDll = Join-Path $mcpGateDir "Orbit.Mcp.dll"
+if (-not (Test-Path $mcpGateExe)) {
+    throw "Missing $mcpGateExe (Hermes MCP bridge). Re-run without -SkipPublish."
+}
+if (-not (Test-Path $mcpGateDll)) {
+    throw "Missing $mcpGateDll (Hermes MCP bridge). Re-run without -SkipPublish."
+}
+
+$launcherGateDll = Join-Path $publishDir "outlook-launcher\Orbit.OutlookLauncher.dll"
+if (-not (Test-Path $launcherGateDll)) {
+    throw "Missing $launcherGateDll (Outlook launcher). Re-run without -SkipPublish."
 }
 
 Write-Host "Compiling installer wizard..."

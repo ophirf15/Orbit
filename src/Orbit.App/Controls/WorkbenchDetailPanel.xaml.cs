@@ -256,6 +256,8 @@ public sealed partial class WorkbenchDetailPanel : UserControl
                 TitleBox.Text = _task.Title;
                 DeleteTaskButton.Visibility = Visibility.Visible;
                 ArchiveButton.Visibility = Visibility.Visible;
+                ArchiveProjectButton.Visibility = Visibility.Collapsed;
+                MergeProjectButton.Visibility = Visibility.Collapsed;
                 BackButton.Visibility = Visibility.Visible;
                 BackButton.SetValue(ToolTipService.ToolTipProperty, $"Back to {_context.Name}");
                 OrbitRuntimeContextProvider.Instance.SetFocus(projectId, _context.Name, taskId);
@@ -270,6 +272,8 @@ public sealed partial class WorkbenchDetailPanel : UserControl
                 TitleBox.Text = _context.Name;
                 DeleteTaskButton.Visibility = Visibility.Collapsed;
                 ArchiveButton.Visibility = Visibility.Collapsed;
+                ArchiveProjectButton.Visibility = Visibility.Visible;
+                MergeProjectButton.Visibility = Visibility.Visible;
                 BackButton.Visibility = Visibility.Visible;
                 BackButton.SetValue(ToolTipService.ToolTipProperty, "Close");
                 OrbitRuntimeContextProvider.Instance.SetFocus(projectId, _context.Name);
@@ -352,6 +356,12 @@ public sealed partial class WorkbenchDetailPanel : UserControl
 
         if (_task is not null)
         {
+            if (!string.IsNullOrWhiteSpace(_task.SourceLine))
+            {
+                OverviewHost.Children.Add(Label("Source"));
+                OverviewHost.Children.Add(BodyText(_task.SourceLine!));
+            }
+
             OverviewHost.Children.Add(Label("Brief"));
             var briefBox = SoftTextBox("Living brief — what this is about…", minHeight: 140, acceptsReturn: true);
             briefBox.Text = _task.Body ?? string.Empty;
@@ -969,15 +979,45 @@ public sealed partial class WorkbenchDetailPanel : UserControl
     private Border BuildSuggestionCard(PendingSuggestionVm suggestion)
     {
         var body = new StackPanel { Spacing = 8 };
-        body.Children.Add(new TextBlock
+        var isAmbiguousMail = string.Equals(
+            suggestion.SuggestionType,
+            "disambiguate_email_claim",
+            StringComparison.Ordinal);
+        if (isAmbiguousMail)
         {
-            Text = suggestion.Summary,
-            TextWrapping = TextWrapping.Wrap,
-            FontSize = 12,
-        });
+            var (title, emailDetail) = ProjectPickUi.FormatAmbiguousEmailDisplay(
+                suggestion.Summary,
+                suggestion.PayloadJson);
+            body.Children.Add(new TextBlock
+            {
+                Text = title,
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = 12,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            });
+            if (!string.IsNullOrWhiteSpace(emailDetail))
+            {
+                body.Children.Add(new TextBlock
+                {
+                    Text = emailDetail,
+                    TextWrapping = TextWrapping.Wrap,
+                    FontSize = 11,
+                    Opacity = 0.75,
+                });
+            }
+        }
+        else
+        {
+            body.Children.Add(new TextBlock
+            {
+                Text = suggestion.Summary,
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = 12,
+            });
+        }
 
         var detail = DescribeSuggestion(suggestion);
-        if (detail is not null)
+        if (detail is not null && !isAmbiguousMail)
         {
             body.Children.Add(new TextBlock
             {
@@ -1240,8 +1280,32 @@ public sealed partial class WorkbenchDetailPanel : UserControl
         }
 
         using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+        string? applyProjectId = null;
+        if (accept
+            && string.Equals(suggestion.SuggestionType, "disambiguate_email_claim", StringComparison.Ordinal)
+            && string.IsNullOrWhiteSpace(suggestion.ProjectId))
+        {
+            var choices = ProjectPickUi.MergeChoices(
+                ProjectPickUi.ParseCandidates(suggestion.PayloadJson),
+                await ProjectPickUi.LoadActiveProjectsAsync(client));
+            applyProjectId = await ProjectPickUi.ShowPickerAsync(
+                XamlRoot,
+                choices,
+                title: "Pick a project",
+                message: "This email claim is ambiguous — choose a project to attach it to.");
+            if (string.IsNullOrWhiteSpace(applyProjectId))
+            {
+                FooterHint.Text = "Pick a project to accept this claim.";
+                return;
+            }
+        }
+        else if (accept)
+        {
+            applyProjectId = suggestion.ProjectId ?? _projectId;
+        }
+
         var ok = accept
-            ? await client.AcceptSuggestionAsync(suggestion.Id)
+            ? await client.AcceptSuggestionAsync(suggestion.Id, applyProjectId)
             : await client.RejectSuggestionAsync(suggestion.Id);
 
         FooterHint.Text = ok
@@ -1605,13 +1669,13 @@ public sealed partial class WorkbenchDetailPanel : UserControl
 
         AgentInput.Text = string.Empty;
         _agentBusy = true;
-        AgentTranscript.Text += $"\n\nYou: {text}\nAgent: …";
+        AgentInput.IsEnabled = false;
+        AgentTranscript.Text += $"\n\nYou: {text}\nHermes: {HermesThinkingCopy.NextIdleLine(0)}";
         try
         {
             if (LooksLikeDeleteRequest(text) && _taskId is not null)
             {
-                AgentTranscript.Text = AgentTranscript.Text.TrimEnd('…')
-                    + "I can delete this task from the workbench. Confirm in the dialog.";
+                ReplaceHermesStatusLine("I can delete this task from the workbench. Confirm in the dialog.");
                 PersistCurrentSession();
                 await ConfirmAndDeleteTaskAsync();
                 return;
@@ -1632,7 +1696,7 @@ public sealed partial class WorkbenchDetailPanel : UserControl
                 var msg = applied
                     ? $"Done — set title to:\n{applyTitle}"
                     : "Couldn't update the title (Core Host may be down).";
-                AgentTranscript.Text = AgentTranscript.Text.TrimEnd('…') + msg;
+                ReplaceHermesStatusLine(msg);
                 _agentHistory.Add(new HermesChatMessage { Role = "user", Content = text });
                 _agentHistory.Add(new HermesChatMessage { Role = "assistant", Content = msg });
                 PersistCurrentSession();
@@ -1647,21 +1711,23 @@ public sealed partial class WorkbenchDetailPanel : UserControl
                 var msg = applied
                     ? $"Done — status is now {status}."
                     : "Couldn't update status.";
-                AgentTranscript.Text = AgentTranscript.Text.TrimEnd('…') + msg;
+                ReplaceHermesStatusLine(msg);
                 _agentHistory.Add(new HermesChatMessage { Role = "user", Content = text });
                 _agentHistory.Add(new HermesChatMessage { Role = "assistant", Content = msg });
                 PersistCurrentSession();
                 return;
             }
 
-            var reply = await CaptureClarifyHermesContinueLooseAsync(text);
+            var reply = await CaptureClarifyHermesContinueLooseAsync(
+                text,
+                status => DispatcherQueue.TryEnqueue(() => ReplaceHermesStatusLine(status)));
             if (WorkbenchAgentActions.TryParseReply(reply, out var mutation, out var display)
                 && mutation is not null)
             {
                 if (mutation.DeleteTask && _taskId is not null)
                 {
-                    AgentTranscript.Text = AgentTranscript.Text.TrimEnd('…')
-                        + (string.IsNullOrWhiteSpace(display) || display == "Done."
+                    ReplaceHermesStatusLine(
+                        string.IsNullOrWhiteSpace(display) || display == "Done."
                             ? "I'll delete this task after you confirm."
                             : display);
                     PersistCurrentSession();
@@ -1675,7 +1741,7 @@ public sealed partial class WorkbenchDetailPanel : UserControl
                     var shown = string.IsNullOrWhiteSpace(display) || display == "Done."
                         ? confirm
                         : $"{display}\n{confirm}";
-                    AgentTranscript.Text = AgentTranscript.Text.TrimEnd('…') + shown;
+                    ReplaceHermesStatusLine(shown);
                     PersistCurrentSession();
                     return;
                 }
@@ -1689,13 +1755,13 @@ public sealed partial class WorkbenchDetailPanel : UserControl
                     var shown = string.IsNullOrWhiteSpace(display) || display == "Done."
                         ? confirm
                         : $"{display}\n{confirm}";
-                    AgentTranscript.Text = AgentTranscript.Text.TrimEnd('…') + shown;
+                    ReplaceHermesStatusLine(shown);
                     PersistCurrentSession();
                     return;
                 }
             }
 
-            AgentTranscript.Text = AgentTranscript.Text.TrimEnd('…') + reply;
+            ReplaceHermesStatusLine(reply);
             PersistCurrentSession();
         }
         catch (Exception ex)
@@ -1706,7 +1772,31 @@ public sealed partial class WorkbenchDetailPanel : UserControl
         finally
         {
             _agentBusy = false;
+            AgentInput.IsEnabled = true;
         }
+    }
+
+    private void ReplaceHermesStatusLine(string text)
+    {
+        var current = AgentTranscript.Text ?? string.Empty;
+        const string marker = "\nHermes: ";
+        var idx = current.LastIndexOf(marker, StringComparison.Ordinal);
+        if (idx < 0)
+        {
+            // Legacy "Agent: …" path
+            const string legacy = "\nAgent: ";
+            idx = current.LastIndexOf(legacy, StringComparison.Ordinal);
+            if (idx < 0)
+            {
+                AgentTranscript.Text = current + marker.TrimStart('\n') + text;
+                return;
+            }
+
+            AgentTranscript.Text = current[..(idx + legacy.Length)] + text;
+            return;
+        }
+
+        AgentTranscript.Text = current[..(idx + marker.Length)] + text;
     }
 
     private static string BuildAppliedMessage(WorkbenchAgentMutation mutation)
@@ -1851,7 +1941,9 @@ public sealed partial class WorkbenchDetailPanel : UserControl
                && (lower.Contains("task") || lower.Contains("this") || lower.Contains("it") || lower.Contains("line"));
     }
 
-    private async Task<string> CaptureClarifyHermesContinueLooseAsync(string userText)
+    private async Task<string> CaptureClarifyHermesContinueLooseAsync(
+        string userText,
+        Action<string>? onProgress = null)
     {
         if (!HermesUrlValidation.TryValidate(App.Settings.HermesBaseUrl, out var url, out _))
         {
@@ -1878,6 +1970,12 @@ public sealed partial class WorkbenchDetailPanel : UserControl
             if (delta.Kind == HermesChatDeltaKind.Error)
             {
                 return LocalAgentFallback(userText);
+            }
+
+            if (delta.Kind == HermesChatDeltaKind.Progress)
+            {
+                onProgress?.Invoke(HermesThinkingCopy.FromProgress(delta.Text, delta.ToolName, delta.Status));
+                continue;
             }
 
             if (delta.Kind == HermesChatDeltaKind.Content && !string.IsNullOrEmpty(delta.Text))
@@ -2147,6 +2245,98 @@ public sealed partial class WorkbenchDetailPanel : UserControl
         else
         {
             FooterHint.Text = "Archive project failed.";
+        }
+    }
+
+    private async void MergeProject_Click(object sender, RoutedEventArgs e)
+    {
+        if (_projectId is null || string.IsNullOrWhiteSpace(_projectName))
+        {
+            return;
+        }
+
+        // Reuse workbench page merge flow via a lightweight inline dialog.
+        try
+        {
+            using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+            var projects = await client.GetProjectsAsync();
+            var choices = (projects ?? [])
+                .Where(p => !string.Equals(p.Id, _projectId, StringComparison.Ordinal))
+                .Select(p => new ProjectPickUi.Choice { Id = p.Id, Name = p.Name })
+                .OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (choices.Count == 0)
+            {
+                FooterHint.Text = "No other project to merge into.";
+                return;
+            }
+
+            var targetId = await ProjectPickUi.ShowPickerAsync(
+                XamlRoot,
+                choices,
+                "Merge project into…",
+                $"Choose the project that should keep the work from “{_projectName}”. This project will be archived.");
+            if (string.IsNullOrWhiteSpace(targetId))
+            {
+                return;
+            }
+
+            var preview = await client.PreviewMergeProjectAsync(_projectId, targetId);
+            if (preview is null)
+            {
+                FooterHint.Text = "Could not preview merge.";
+                return;
+            }
+
+            var body = new StackPanel { Spacing = 8 };
+            body.Children.Add(new TextBlock
+            {
+                Text = $"Merge “{preview.SourceName}” into “{preview.TargetName}”?",
+                TextWrapping = TextWrapping.Wrap,
+            });
+            body.Children.Add(new TextBlock
+            {
+                Text = preview.CountsLine,
+                Opacity = 0.8,
+                TextWrapping = TextWrapping.Wrap,
+            });
+            if (preview.Warnings.Count > 0)
+            {
+                body.Children.Add(new TextBlock
+                {
+                    Text = string.Join("\n", preview.Warnings),
+                    Opacity = 0.75,
+                    TextWrapping = TextWrapping.Wrap,
+                });
+            }
+
+            var confirm = new ContentDialog
+            {
+                Title = "Confirm merge",
+                Content = body,
+                PrimaryButtonText = preview.Warnings.Count > 0 ? "Merge anyway" : "Merge",
+                CloseButtonText = "Cancel",
+                DefaultButton = ContentDialogButton.Close,
+                XamlRoot = XamlRoot,
+            };
+            if (await confirm.ShowAsync() != ContentDialogResult.Primary)
+            {
+                return;
+            }
+
+            var result = await client.MergeProjectAsync(_projectId, targetId, force: preview.Warnings.Count > 0);
+            if (result is null)
+            {
+                FooterHint.Text = "Merge failed.";
+                return;
+            }
+
+            ContentChanged?.Invoke(this, EventArgs.Empty);
+            CloseRequested?.Invoke(this, EventArgs.Empty);
+        }
+        catch (Exception ex)
+        {
+            FooterHint.Text = $"Merge failed: {ex.Message}";
         }
     }
 

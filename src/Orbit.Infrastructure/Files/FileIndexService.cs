@@ -25,29 +25,39 @@ public sealed class FileIndexService
 
     public int ReindexFolder(string folderId) => ReindexFolderDetailed(folderId).TouchedCount;
 
-    public FileReindexResult ReindexFolderDetailed(string folderId)
+    public FileReindexResult ReindexFolderDetailed(string folderId, FileReindexOptions? options = null)
     {
+        options ??= new FileReindexOptions();
         var folder = _folders.Get(folderId)
             ?? throw new ArgumentException("Folder was not found.", nameof(folderId));
 
         if (!Directory.Exists(folder.RootPath))
         {
             _folders.MarkIndexed(folderId, FolderAvailability.Missing);
-            return new FileReindexResult();
+            return new FileReindexResult
+            {
+                Warning = "Folder root is missing on disk.",
+            };
         }
 
+        var root = PathSafety.NormalizeFullPath(folder.RootPath);
         var seenIds = new HashSet<string>(StringComparer.Ordinal);
         var result = new FileReindexResult();
 
-        foreach (var path in EnumerateFilesSafe(folder.RootPath))
+        foreach (var path in EnumerateFilesSafe(root, result))
         {
             try
             {
-                var outcome = UpsertFile(folder, path);
+                var outcome = UpsertFile(folder, path, options);
                 if (outcome.FileId is not null)
                 {
                     seenIds.Add(outcome.FileId);
                     result.TouchedCount++;
+                    if (outcome.IsOfflinePlaceholder)
+                    {
+                        result.OfflinePlaceholderCount++;
+                    }
+
                     if (outcome.SkippedUnchanged)
                     {
                         result.SkippedUnchangedCount++;
@@ -56,6 +66,8 @@ public sealed class FileIndexService
                     {
                         result.ExtractedCount++;
                     }
+
+                    result.AddSampleRelativePath(ToRelativePath(root, path));
                 }
             }
             catch (Exception)
@@ -67,6 +79,7 @@ public sealed class FileIndexService
         PruneMissing(folder.Id, folder.ProjectId, seenIds);
         RebuildSearchForProject(folder.ProjectId);
         _folders.MarkIndexed(folderId, FolderAvailability.Available);
+        result.FinalizeWarning();
         return result;
     }
 
@@ -83,7 +96,7 @@ public sealed class FileIndexService
             INNER JOIN file_project_links fpl ON fpl.file_artifact_id = fa.id
             WHERE fa.archived_at IS NULL
               AND fpl.project_id = $p
-            ORDER BY fa.display_name COLLATE NOCASE
+            ORDER BY fa.path COLLATE NOCASE
             LIMIT $limit;
             """;
         cmd.Parameters.AddWithValue("$p", projectId);
@@ -243,11 +256,20 @@ public sealed class FileIndexService
         return list;
     }
 
-    private UpsertOutcome UpsertFile(ProjectFolderRecord folder, string path)
+    private UpsertOutcome UpsertFile(ProjectFolderRecord folder, string path, FileReindexOptions options)
     {
         var full = PathSafety.NormalizeFullPath(path);
         var stat = _external.Stat(full);
         if (stat is null || stat.IsDirectory)
+        {
+            return default;
+        }
+
+        var looksOffline = string.Equals(
+            stat.Availability,
+            FolderAvailability.OfflinePlaceholder,
+            StringComparison.Ordinal);
+        if (looksOffline && !options.IncludeOfflinePlaceholders)
         {
             return default;
         }
@@ -291,7 +313,11 @@ public sealed class FileIndexService
         {
             LinkToProject(existingId, folder.ProjectId);
             TouchFolderLink(connection, existingId, folder.Id, now);
-            return new UpsertOutcome(existingId, SkippedUnchanged: true, ExtractedText: false);
+            return new UpsertOutcome(
+                existingId,
+                SkippedUnchanged: true,
+                ExtractedText: false,
+                IsOfflinePlaceholder: looksOffline);
         }
 
         string? text = existingText;
@@ -335,7 +361,11 @@ public sealed class FileIndexService
                 meta.Parameters.AddWithValue("$id", existingId);
                 meta.ExecuteNonQuery();
                 LinkToProject(existingId, folder.ProjectId);
-                return new UpsertOutcome(existingId, SkippedUnchanged: true, ExtractedText: false);
+                return new UpsertOutcome(
+                    existingId,
+                    SkippedUnchanged: true,
+                    ExtractedText: false,
+                    IsOfflinePlaceholder: false);
             }
 
             if (stream.CanSeek)
@@ -349,6 +379,10 @@ public sealed class FileIndexService
         catch (IOException)
         {
             availability = FolderAvailability.OfflinePlaceholder;
+            if (!options.IncludeOfflinePlaceholders)
+            {
+                return default;
+            }
         }
 
         var id = existingId ?? Guid.NewGuid().ToString("D");
@@ -392,7 +426,8 @@ public sealed class FileIndexService
         }
 
         LinkToProject(id, folder.ProjectId);
-        return new UpsertOutcome(id, SkippedUnchanged: false, ExtractedText: extracted);
+        var offline = string.Equals(availability, FolderAvailability.OfflinePlaceholder, StringComparison.Ordinal);
+        return new UpsertOutcome(id, SkippedUnchanged: false, ExtractedText: extracted, IsOfflinePlaceholder: offline);
     }
 
     private static void TouchFolderLink(SqliteConnection connection, string fileId, string folderId, string now)
@@ -410,7 +445,11 @@ public sealed class FileIndexService
         cmd.ExecuteNonQuery();
     }
 
-    private readonly record struct UpsertOutcome(string? FileId, bool SkippedUnchanged, bool ExtractedText);
+    private readonly record struct UpsertOutcome(
+        string? FileId,
+        bool SkippedUnchanged,
+        bool ExtractedText,
+        bool IsOfflinePlaceholder);
 
     private void PruneMissing(string folderId, string projectId, HashSet<string> seenIds)
     {
@@ -501,20 +540,31 @@ public sealed class FileIndexService
         tx.Commit();
     }
 
-    private static IEnumerable<string> EnumerateFilesSafe(string root)
+    /// <summary>
+    /// Depth-first walk using file attributes (more reliable than Exists for cloud placeholders).
+    /// Soft-skips entire directories on ACL/cloud IO failures and records them on <paramref name="result"/>.
+    /// </summary>
+    private static IEnumerable<string> EnumerateFilesSafe(string root, FileReindexResult result)
     {
         var stack = new Stack<string>();
         stack.Push(root);
         while (stack.Count > 0)
         {
             var dir = stack.Pop();
-            IEnumerable<string> entries;
+            IEnumerable<FileSystemInfo> entries;
             try
             {
-                entries = Directory.EnumerateFileSystemEntries(dir);
+                entries = new DirectoryInfo(dir).EnumerateFileSystemInfos();
             }
             catch (Exception ex) when (ExternalFileService.IsCloudOrIoSoftFailure(ex))
             {
+                // Not the walk root: skipping a subtree is the "root files only" symptom when
+                // OneDrive/ACL denies Enumerate on nested folders.
+                if (!string.Equals(dir, root, StringComparison.OrdinalIgnoreCase))
+                {
+                    result.AddSoftSkippedDirectory(dir);
+                }
+
                 continue;
             }
 
@@ -523,23 +573,55 @@ public sealed class FileIndexService
                 string full;
                 try
                 {
-                    full = PathSafety.NormalizeFullPath(entry);
+                    full = PathSafety.NormalizeFullPath(entry.FullName);
                 }
                 catch (Exception)
                 {
                     continue;
                 }
 
-                if (Directory.Exists(full))
+                bool isDirectory;
+                try
+                {
+                    isDirectory = (entry.Attributes & FileAttributes.Directory) != 0;
+                }
+                catch (Exception ex) when (ExternalFileService.IsCloudOrIoSoftFailure(ex))
+                {
+                    // Fall back to Exists; if both fail, drop the entry rather than mis-classify.
+                    isDirectory = Directory.Exists(full);
+                    if (!isDirectory && !File.Exists(full))
+                    {
+                        continue;
+                    }
+                }
+
+                if (isDirectory)
                 {
                     stack.Push(full);
                 }
-                else if (File.Exists(full))
+                else
                 {
                     yield return full;
                 }
             }
         }
+    }
+
+    public static string ToRelativePath(string root, string fullPath)
+    {
+        var normalizedRoot = PathSafety.NormalizeFullPath(root)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var normalizedFull = PathSafety.NormalizeFullPath(fullPath);
+        if (!normalizedFull.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            return Path.GetFileName(normalizedFull);
+        }
+
+        var relative = normalizedFull[normalizedRoot.Length..]
+            .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return string.IsNullOrEmpty(relative)
+            ? Path.GetFileName(normalizedFull)
+            : relative.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
     }
 
     private static List<FileSearchHit> ReadHits(SqliteCommand cmd)

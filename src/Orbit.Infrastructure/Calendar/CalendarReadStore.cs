@@ -110,6 +110,37 @@ public sealed class CalendarReadStore
         return list;
     }
 
+    public CalendarSourceRecord? GetSource(string sourceId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceId);
+        return ListSources().FirstOrDefault(s => string.Equals(s.Id, sourceId.Trim(), StringComparison.Ordinal));
+    }
+
+    /// <summary>Operator include/exclude toggle. Sync preserves this flag on upsert.</summary>
+    public CalendarSourceRecord SetEnabled(string sourceId, bool enabled)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceId);
+        using var connection = _factory.CreateConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            """
+            UPDATE calendar_sources
+            SET enabled = $enabled,
+                updated_at = $t
+            WHERE id = $id AND archived_at IS NULL;
+            """;
+        cmd.Parameters.AddWithValue("$id", sourceId.Trim());
+        cmd.Parameters.AddWithValue("$enabled", enabled ? 1 : 0);
+        cmd.Parameters.AddWithValue("$t", DateTimeOffset.UtcNow.ToString("O"));
+        if (cmd.ExecuteNonQuery() == 0)
+        {
+            throw new ArgumentException("Calendar source was not found.", nameof(sourceId));
+        }
+
+        return GetSource(sourceId.Trim())
+            ?? throw new ArgumentException("Calendar source was not found.", nameof(sourceId));
+    }
+
     public IReadOnlyList<CalendarContextMeeting> GetUpcomingContext(
         TimeSpan? window = null,
         int limit = 40,
@@ -133,6 +164,7 @@ public sealed class CalendarReadStore
               AND e.starts_at >= $now
               AND e.starts_at <= $until
               AND ($changedSince IS NULL OR e.updated_at >= $changedSince)
+              AND (s.id IS NULL OR s.enabled = 1)
             ORDER BY e.starts_at ASC
             LIMIT $limit;
             """;

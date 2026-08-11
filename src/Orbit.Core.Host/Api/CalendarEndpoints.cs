@@ -14,6 +14,11 @@ public sealed class CalendarSubscribeRequest
     public string? DisplayName { get; set; }
 }
 
+public sealed class CalendarSourceEnabledRequest
+{
+    public bool? Enabled { get; set; }
+}
+
 public static class CalendarEndpoints
 {
     public static IEndpointRouteBuilder MapCalendarEndpoints(this IEndpointRouteBuilder app)
@@ -21,6 +26,7 @@ public static class CalendarEndpoints
         app.MapGet(HostEndpoints.Calendar, GetContext);
         app.MapPost(HostEndpoints.CalendarSync, Sync);
         app.MapGet(HostEndpoints.CalendarSources, ListSources);
+        app.MapPatch(HostEndpoints.CalendarSourceById, SetSourceEnabled);
         app.MapPost(HostEndpoints.CalendarSubscribe, Subscribe);
         return app;
     }
@@ -102,6 +108,39 @@ public static class CalendarEndpoints
             }),
             requestId,
         });
+    }
+
+    private static IResult SetSourceEnabled(
+        string id,
+        CalendarSourceEnabledRequest? body,
+        CalendarReadStore store,
+        HttpContext http)
+    {
+        var requestId = ApiKeyMiddleware.GetRequestId(http);
+        if (body?.Enabled is null)
+        {
+            return Results.Json(
+                ApiErrors.Create(ApiErrorCodes.BadRequest, "Body field 'enabled' is required.", requestId),
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        try
+        {
+            var source = store.SetEnabled(id, body.Enabled.Value);
+            return Results.Json(new
+            {
+                id = source.Id,
+                name = source.Name,
+                enabled = source.Enabled,
+                requestId,
+            });
+        }
+        catch (ArgumentException ex)
+        {
+            return Results.Json(
+                ApiErrors.Create(ApiErrorCodes.NotFound, ex.Message, requestId),
+                statusCode: StatusCodes.Status404NotFound);
+        }
     }
 
     private static IResult Subscribe(CalendarSubscribeRequest? body, CalendarSyncService sync, HttpContext http)

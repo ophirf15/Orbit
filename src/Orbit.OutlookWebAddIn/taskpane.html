@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=Edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Orbit</title>
+    <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js" type="text/javascript"></script>
+    <link rel="stylesheet" href="./taskpane.css" />
+  </head>
+  <body>
+    <main class="pane">
+      <header class="brand">
+        <h1>Orbit</h1>
+        <p id="statusLine" class="status">Starting…</p>
+      </header>
+
+      <section id="helloBanner" class="hello" hidden>
+        <p>Orbit hello — add-in loaded.</p>
+      </section>
+
+      <section class="block">
+        <h2>This email</h2>
+        <dl class="meta">
+          <div>
+            <dt>Subject</dt>
+            <dd id="mailSubject">—</dd>
+          </div>
+          <div>
+            <dt>From</dt>
+            <dd id="mailFrom">—</dd>
+          </div>
+          <div>
+            <dt>Message-ID</dt>
+            <dd id="mailMessageId" class="mono">—</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="block">
+        <label for="memo">Memo for Hermes</label>
+        <textarea
+          id="memo"
+          rows="5"
+          maxlength="4000"
+          placeholder="What is this about, or what should Hermes do with it?"
+        ></textarea>
+      </section>
+
+      <section class="block">
+        <label for="project">Project</label>
+        <select id="project">
+          <option value="">No project (limbo)</option>
+        </select>
+        <p id="projectHint" class="hint">Projects load from Orbit Core Host.</p>
+      </section>
+
+      <section class="actions">
+        <button id="sendBtn" type="button" disabled>Send to Orbit</button>
+        <button id="refreshProjectsBtn" type="button" class="secondary">Refresh projects</button>
+      </section>
+
+      <details class="settings">
+        <summary>Connection</summary>
+        <label for="hostUrl">Core Host URL</label>
+        <input id="hostUrl" type="url" placeholder="http://127.0.0.1:8741" />
+        <label for="apiKey">API key (if required)</label>
+        <input id="apiKey" type="password" autocomplete="off" placeholder="Optional on loopback" />
+        <button id="saveSettingsBtn" type="button" class="secondary">Save connection</button>
+      </details>
+
+      <p id="result" class="result" role="status" aria-live="polite"></p>
+    </main>
+    <script type="module" src="./taskpane.js"></script>
+  </body>
+</html>

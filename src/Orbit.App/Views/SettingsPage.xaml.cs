@@ -29,6 +29,24 @@ public sealed partial class SettingsPage : Page
         _ = RefreshHostConnectionAsync();
         _ = RefreshCalendarSourcesAsync();
         _ = RefreshSyncAsync();
+        RefreshOutlookAddInStatus();
+        ShowSettingsPane("appearance");
+    }
+
+    private void SettingsNav_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
+    {
+        if (args.SelectedItem is NavigationViewItem item && item.Tag is string tag)
+        {
+            ShowSettingsPane(tag);
+        }
+    }
+
+    private void ShowSettingsPane(string tag)
+    {
+        PaneAppearance.Visibility = tag == "appearance" ? Visibility.Visible : Visibility.Collapsed;
+        PaneHermes.Visibility = tag == "hermes" ? Visibility.Visible : Visibility.Collapsed;
+        PaneMail.Visibility = tag == "mail" ? Visibility.Visible : Visibility.Collapsed;
+        PaneAdvanced.Visibility = tag == "advanced" ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void LoadFromSettings()
@@ -110,6 +128,24 @@ public sealed partial class SettingsPage : Page
     private async void TestHermesButton_Click(object sender, RoutedEventArgs e)
     {
         await RunHermesConnectionProbeAsync(saveOnSuccess: false).ConfigureAwait(true);
+    }
+
+    private async void ClearStuckOperatorRuns_Click(object sender, RoutedEventArgs e)
+    {
+        HermesTestResultText.Visibility = Visibility.Visible;
+        HermesTestResultText.Text = "Clearing stuck operator runs…";
+        try
+        {
+            using var core = new CoreHostClient(App.Settings, App.SettingsStore);
+            var n = await core.ClearStuckOperatorRunsAsync().ConfigureAwait(true);
+            HermesTestResultText.Text = n == 0
+                ? "No stuck operator runs — queue is clear."
+                : $"Cleared {n} stuck run(s). Next mail push should not stall.";
+        }
+        catch (Exception ex)
+        {
+            HermesTestResultText.Text = $"Could not clear stuck runs: {ex.Message}";
+        }
     }
 
     private async void ConnectHermesButton_Click(object sender, RoutedEventArgs e)
@@ -847,18 +883,81 @@ public sealed partial class SettingsPage : Page
         try
         {
             using var client = new CoreHostClient(App.Settings, App.SettingsStore);
-            var text = await client.GetCalendarSourcesSummaryAsync();
+            var sources = await client.ListCalendarSourcesAsync();
             DispatcherQueue.TryEnqueue(() =>
             {
-                CalendarSourcesText.Text = string.IsNullOrWhiteSpace(text)
-                    ? "Calendar sources: (none yet — set an ICS path and Sync)."
-                    : text;
+                CalendarSourcesPanel.Children.Clear();
+                if (sources is null)
+                {
+                    CalendarSourcesText.Visibility = Visibility.Visible;
+                    CalendarSourcesText.Text = "Calendar sources: host unavailable.";
+                    return;
+                }
+
+                CalendarSourcesText.Visibility = Visibility.Collapsed;
+                if (sources.Count == 0)
+                {
+                    CalendarSourcesPanel.Children.Add(new TextBlock
+                    {
+                        Text = "No calendar sources yet — set an ICS path and Sync, or sign in with Microsoft.",
+                        Opacity = 0.75,
+                        TextWrapping = TextWrapping.WrapWholeWords,
+                    });
+                    return;
+                }
+
+                foreach (var src in sources)
+                {
+                    var toggle = new ToggleSwitch
+                    {
+                        Header = src.DisplayLabel,
+                        OnContent = "Included",
+                        OffContent = "Excluded",
+                        Tag = src.Id,
+                    };
+                    toggle.IsOn = src.Enabled;
+                    toggle.Toggled += CalendarSourceToggle_Toggled;
+                    CalendarSourcesPanel.Children.Add(toggle);
+                }
             });
         }
         catch (Exception)
         {
             DispatcherQueue.TryEnqueue(() =>
-                CalendarSourcesText.Text = "Calendar sources: host unavailable.");
+            {
+                CalendarSourcesPanel.Children.Clear();
+                CalendarSourcesText.Visibility = Visibility.Visible;
+                CalendarSourcesText.Text = "Calendar sources: host unavailable.";
+            });
+        }
+    }
+
+    private async void CalendarSourceToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ToggleSwitch { Tag: string sourceId } toggle || string.IsNullOrWhiteSpace(sourceId))
+        {
+            return;
+        }
+
+        try
+        {
+            using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+            var ok = await client.SetCalendarSourceEnabledAsync(sourceId, toggle.IsOn);
+            CalendarStatusText.Visibility = Visibility.Visible;
+            CalendarStatusText.Text = ok
+                ? (toggle.IsOn ? "Calendar included in Pulse." : "Calendar excluded from Pulse.")
+                : "Could not update calendar include setting.";
+            if (!ok)
+            {
+                toggle.Toggled -= CalendarSourceToggle_Toggled;
+                toggle.IsOn = !toggle.IsOn;
+                toggle.Toggled += CalendarSourceToggle_Toggled;
+            }
+        }
+        catch (Exception)
+        {
+            CalendarStatusText.Visibility = Visibility.Visible;
+            CalendarStatusText.Text = "Could not update calendar include setting.";
         }
     }
 
@@ -911,6 +1010,46 @@ public sealed partial class SettingsPage : Page
         }
 
         await RunInstallUpdateAsync(_lastUpdateCheck);
+    }
+
+    private void RefreshOutlookAddInStatus()
+    {
+        var status = OutlookLauncherSetup.GetStatus();
+        OutlookAddInStatusText.Text = status.Summary;
+        InstallOutlookAddInButton.IsEnabled = status.PayloadAvailable || status.InstalledFilesPresent;
+        UninstallOutlookAddInButton.IsEnabled = status.IsRegistered || status.InstalledFilesPresent;
+    }
+
+    private void InstallOutlookAddInButton_Click(object sender, RoutedEventArgs e)
+    {
+        InstallOutlookAddInButton.IsEnabled = false;
+        UninstallOutlookAddInButton.IsEnabled = false;
+        try
+        {
+            var result = OutlookLauncherSetup.InstallOrUpdate();
+            OutlookAddInActionText.Text = result.Message;
+            OutlookAddInActionText.Visibility = Visibility.Visible;
+        }
+        finally
+        {
+            RefreshOutlookAddInStatus();
+        }
+    }
+
+    private void UninstallOutlookAddInButton_Click(object sender, RoutedEventArgs e)
+    {
+        InstallOutlookAddInButton.IsEnabled = false;
+        UninstallOutlookAddInButton.IsEnabled = false;
+        try
+        {
+            var result = OutlookLauncherSetup.Uninstall();
+            OutlookAddInActionText.Text = result.Message;
+            OutlookAddInActionText.Visibility = Visibility.Visible;
+        }
+        finally
+        {
+            RefreshOutlookAddInStatus();
+        }
     }
 
     private MicrosoftGraphAuthService CreateGraphAuth()

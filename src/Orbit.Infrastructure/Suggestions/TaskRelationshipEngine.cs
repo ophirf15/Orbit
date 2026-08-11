@@ -41,6 +41,11 @@ public sealed class TaskRelationshipEngine
         "but", "can", "get", "got", "new", "old", "one", "two", "please", "thanks", "regards",
         "task", "todo", "note", "also", "just", "more", "some", "over", "under", "before",
         "after", "next", "make", "made", "back", "still", "here",
+        // Generic mail/property noise that caused PG&E → Comcast/CAA false merges.
+        "email", "message", "sent", "received", "subject", "forward", "attached",
+        "account", "service", "payment", "billing", "utility", "lease", "property",
+        "building", "unit", "apartment", "address", "phone", "number", "update",
+        "regarding", "re", "fw", "fwd", "dear", "hello", "team", "thanks",
     };
 
     private readonly SqliteConnectionFactory _factory;
@@ -165,6 +170,12 @@ public sealed class TaskRelationshipEngine
             return [];
         }
 
+        // Operator already chose the project at ingest — Host token merges are noise; Hermes may link later.
+        if (email.HasOperatorChosenProject)
+        {
+            return [];
+        }
+
         var body = string.IsNullOrWhiteSpace(bodyText) ? email.BodyText : bodyText;
         var subjectLine = string.IsNullOrWhiteSpace(subject) ? email.Subject : subject;
         var haystack = $"{subjectLine}\n{body}".Trim();
@@ -187,8 +198,9 @@ public sealed class TaskRelationshipEngine
                 break;
             }
 
+            // Title + next_action only — task body sprawl caused cross-topic false positives.
+            var target = new HashSet<string>(Tokenize(task.MergeSearchText), StringComparer.OrdinalIgnoreCase);
             var expectations = LoadExpectations(task.Id);
-            var target = new HashSet<string>(Tokenize(task.SearchText), StringComparer.OrdinalIgnoreCase);
             foreach (var expectation in expectations)
             {
                 foreach (var token in Tokenize(expectation))
@@ -198,7 +210,8 @@ public sealed class TaskRelationshipEngine
             }
 
             var overlap = target.Intersect(emailTokens, StringComparer.OrdinalIgnoreCase).ToList();
-            if (overlap.Count < 2)
+            // Stricter than the old ≥2 bag-of-tokens gate.
+            if (overlap.Count < 3)
             {
                 continue;
             }
@@ -212,7 +225,12 @@ public sealed class TaskRelationshipEngine
             // An expectation match is the strong signal; bare title overlap is weaker.
             var expectationHit = expectations.Any(e =>
                 Tokenize(e).Any(t => emailTokens.Contains(t, StringComparer.OrdinalIgnoreCase)));
-            var confidence = Math.Min(0.75, (expectationHit ? 0.5 : 0.35) + (0.05 * overlap.Count));
+            if (!expectationHit && overlap.Count < 4)
+            {
+                continue;
+            }
+
+            var confidence = Math.Min(0.75, (expectationHit ? 0.55 : 0.4) + (0.04 * overlap.Count));
 
             if (_suggestions.HasPendingForPayloadTokens(SuggestionTypes.MergeIntoTask, task.Id, emailId)
                 || _suggestions.WasDecidedForPayloadTokens(SuggestionTypes.MergeIntoTask, task.Id, emailId))
@@ -618,14 +636,25 @@ public sealed class TaskRelationshipEngine
         }
 
         var projectIds = new List<string>();
+        var hasOperatorChosen = false;
         using (var links = connection.CreateCommand())
         {
-            links.CommandText = "SELECT project_id FROM email_project_links WHERE email_artifact_id = $id;";
+            links.CommandText =
+                """
+                SELECT project_id, lower(COALESCE(match_reason, ''))
+                FROM email_project_links
+                WHERE email_artifact_id = $id;
+                """;
             links.Parameters.AddWithValue("$id", emailId);
             using var reader = links.ExecuteReader();
             while (reader.Read())
             {
                 projectIds.Add(reader.GetString(0));
+                var reason = reader.IsDBNull(1) ? string.Empty : reader.GetString(1);
+                if (reason is "explicit" or "operator")
+                {
+                    hasOperatorChosen = true;
+                }
             }
         }
 
@@ -651,6 +680,7 @@ public sealed class TaskRelationshipEngine
             Subject = subject,
             BodyText = bodyText,
             ProjectIds = projectIds,
+            HasOperatorChosenProject = hasOperatorChosen,
         };
     }
 
@@ -699,6 +729,9 @@ public sealed class TaskRelationshipEngine
 
         public string SearchText => $"{Title} {NextAction} {Body}".Trim();
 
+        /// <summary>Tokens used for email→task merge heuristics (exclude sprawling body).</summary>
+        public string MergeSearchText => $"{Title} {NextAction}".Trim();
+
         public bool IsDone =>
             string.Equals(Status, TaskStatuses.Complete, StringComparison.Ordinal)
             || string.Equals(Status, TaskStatuses.Archived, StringComparison.Ordinal);
@@ -724,5 +757,7 @@ public sealed class TaskRelationshipEngine
         public string? BodyText { get; init; }
 
         public required List<string> ProjectIds { get; init; }
+
+        public bool HasOperatorChosenProject { get; init; }
     }
 }

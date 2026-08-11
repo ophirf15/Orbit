@@ -43,6 +43,7 @@ public sealed class OperatorWakeService : BackgroundService
     private readonly EmailDutyEnsureService _dutyEnsure;
     private readonly HermesHealthStatusStoreBridge _health;
     private readonly PulseReadStore _pulse;
+    private readonly OperatorMemoryStore _memory;
     private readonly ILogger<OperatorWakeService> _logger;
     private readonly ConcurrentQueue<WakeItem> _queue = new();
     private readonly object _debounceGate = new();
@@ -59,6 +60,7 @@ public sealed class OperatorWakeService : BackgroundService
         EmailDutyEnsureService dutyEnsure,
         HermesHealthStatusStoreBridge health,
         PulseReadStore pulse,
+        OperatorMemoryStore memory,
         ILogger<OperatorWakeService> logger)
     {
         _hub = hub;
@@ -69,7 +71,29 @@ public sealed class OperatorWakeService : BackgroundService
         _dutyEnsure = dutyEnsure;
         _health = health;
         _pulse = pulse;
+        _memory = memory;
         _logger = logger;
+    }
+
+    public override Task StartAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var cleared = _runs.AbandonAllRunning(
+                "Cleared on Host startup (previous session interrupted).");
+            if (cleared > 0)
+            {
+                _logger.LogWarning(
+                    "Abandoned {Count} stuck operator run(s) left running from a prior Host process.",
+                    cleared);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to clear stuck operator runs on startup.");
+        }
+
+        return base.StartAsync(cancellationToken);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -142,19 +166,38 @@ public sealed class OperatorWakeService : BackgroundService
 
         try
         {
+            // Short stale window — a crash mid-Hermes must not block the next mail push for 12 minutes.
+            _runs.AbandonStaleRunning(
+                TimeSpan.FromMinutes(3),
+                reason: "Abandoned stale operator run (exceeded 3m).");
+
             if (_runs.CountRunning() >= MaxConcurrentRuns)
             {
-                RescheduleAfter(TimeSpan.FromSeconds(2), stoppingToken);
-                return;
+                // Ingest opens an email.ingested shell before Host wake; that must not deadlock Flush.
+                var blocking = _runs.ListRecent(20)
+                    .Where(r => string.Equals(r.Status, OperatorRunStatuses.Running, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                var onlyEmailShells = blocking.Count > 0
+                    && blocking.All(r => r.TriggerKind.Contains("email", StringComparison.OrdinalIgnoreCase));
+                if (!onlyEmailShells)
+                {
+                    RescheduleAfter(TimeSpan.FromSeconds(2), stoppingToken);
+                    return;
+                }
             }
 
             var last = _runs.LastCompletedUtc();
             if (last is not null)
             {
                 var since = DateTimeOffset.UtcNow - last.Value;
-                if (since < DefaultCooldown)
+                // Email shells waiting for Host must not sit behind pulse.refresh's 45s cooldown.
+                var emailShellWaiting = _runs.ListRecent(10).Any(r =>
+                    string.Equals(r.Status, OperatorRunStatuses.Running, StringComparison.OrdinalIgnoreCase)
+                    && r.TriggerKind.Contains("email", StringComparison.OrdinalIgnoreCase));
+                var cooldown = emailShellWaiting ? TimeSpan.FromSeconds(2) : DefaultCooldown;
+                if (since < cooldown)
                 {
-                    RescheduleAfter(DefaultCooldown - since + TimeSpan.FromMilliseconds(250), stoppingToken);
+                    RescheduleAfter(cooldown - since + TimeSpan.FromMilliseconds(250), stoppingToken);
                     return;
                 }
             }
@@ -233,7 +276,10 @@ public sealed class OperatorWakeService : BackgroundService
 
     private async Task RunOperatorAsync(WakeItem item, CancellationToken stoppingToken)
     {
-        var run = _runs.Start(item.Trigger, item.PayloadJson);
+        var emailId = ExtractEmailId(item.PayloadJson);
+        var run = _runs.FindRunning(item.Trigger, emailId)
+                  ?? _runs.Start(item.Trigger, item.PayloadJson);
+        _runs.SetProgress(run.Id, "Waking Hermes…");
         try
         {
             using var client = CreateHermesClient();
@@ -253,6 +299,7 @@ public sealed class OperatorWakeService : BackgroundService
                 return;
             }
 
+            _runs.SetProgress(run.Id, "Opening a Hermes session…");
             var priorSession = _runs.ListRecent(5)
                 .Select(r => r.HermesSessionId)
                 .FirstOrDefault(id => !string.IsNullOrWhiteSpace(id));
@@ -262,11 +309,17 @@ public sealed class OperatorWakeService : BackgroundService
                 cancellationToken: stoppingToken).ConfigureAwait(false);
 
             var emailSnapshot = BuildEmailSnapshot(item);
-            var system = OperatorPromptBuilder.Build(item.Trigger, item.PayloadJson, emailSnapshotJson: emailSnapshot);
+            var relationMemory = EmailRelationMemory.ListRecentFactLines(_memory, limit: 12);
+            var system = OperatorPromptBuilder.Build(
+                item.Trigger,
+                item.PayloadJson,
+                emailSnapshotJson: emailSnapshot,
+                emailRelationMemory: relationMemory);
             var user = string.IsNullOrWhiteSpace(emailSnapshot)
                 ? "Produce the duty briefing for this trigger. Use Orbit tools as needed."
                 : "The email snapshot below is authoritative — do not claim the email is missing. Link/update projects and tasks, then brief what you did.";
 
+            _runs.SetProgress(run.Id, "Asking Hermes to organize…");
             var runResult = await client.TryStartRunAsync(
                 new HermesRunRequest
                 {
@@ -284,19 +337,40 @@ public sealed class OperatorWakeService : BackgroundService
             }
             else
             {
+                _runs.SetProgress(run.Id, "Reading the email, matching projects…");
+                DateTime lastProgressWrite = DateTime.MinValue;
                 var chat = await client.CompleteOperatorChatAsync(
                     new HermesChatRequest
                     {
                         SessionId = session.SessionId,
                         SessionKey = session.SessionKey ?? OperatorSessionKey,
-                        Stream = false,
+                        Stream = true,
                         Messages =
                         [
                             new HermesChatMessage { Role = "system", Content = system },
                             new HermesChatMessage { Role = "user", Content = user },
                         ],
                     },
-                    stoppingToken).ConfigureAwait(false);
+                    stoppingToken,
+                    onProgress: delta =>
+                    {
+                        var line = FormatOperatorProgress(delta);
+                        if (string.IsNullOrWhiteSpace(line))
+                        {
+                            return;
+                        }
+
+                        // Avoid hammering SQLite on rapid tool ticks.
+                        var now = DateTime.UtcNow;
+                        if (now - lastProgressWrite < TimeSpan.FromMilliseconds(400)
+                            && !string.Equals(delta.Status, "completed", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return;
+                        }
+
+                        lastProgressWrite = now;
+                        _runs.SetProgress(run.Id, line);
+                    }).ConfigureAwait(false);
 
                 if (!chat.Ok)
                 {
@@ -314,17 +388,27 @@ public sealed class OperatorWakeService : BackgroundService
             }
 
             EnsureEmailDutyFloor(item);
+            var silent = IsSilentBriefing(briefing);
+            var briefingText = silent
+                ? "Nothing material to surface."
+                : string.IsNullOrWhiteSpace(briefing)
+                    ? "Hermes finished this email run (no briefing text)."
+                    : Truncate(briefing, 4000)!;
             _runs.Complete(
                 run.Id,
                 OperatorRunStatuses.Completed,
-                briefingSummary: Truncate(briefing, 4000),
+                briefingSummary: briefingText,
                 hermesSessionId: session.SessionId,
                 hermesRunId: hermesRunId);
-            PersistPulseBriefing(run.Id, item.Trigger, briefing);
+            if (!silent)
+            {
+                PersistPulseBriefing(run.Id, item.Trigger, briefingText);
+            }
+
             _hub.Publish(new OrbitEvent
             {
                 Type = "operator.briefing",
-                Payload = new { runId = run.Id, trigger = item.Trigger, briefing },
+                Payload = new { runId = run.Id, trigger = item.Trigger, briefing = briefingText, silent },
             });
         }
         catch (Exception ex)
@@ -335,9 +419,36 @@ public sealed class OperatorWakeService : BackgroundService
         }
     }
 
-    private void PersistPulseBriefing(string runId, string trigger, string? briefing)
+    private static bool IsSilentBriefing(string? briefing)
     {
         if (string.IsNullOrWhiteSpace(briefing))
+        {
+            return false;
+        }
+
+        var t = briefing.Trim();
+        return t.Equals("[SILENT]", StringComparison.OrdinalIgnoreCase)
+               || t.Equals("SILENT", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? FormatOperatorProgress(HermesChatDelta delta)
+    {
+        if (!string.IsNullOrWhiteSpace(delta.Text))
+        {
+            return delta.Text.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(delta.ToolName))
+        {
+            return HermesHttpClient.FormatToolProgressLine(delta.ToolName, delta.Status);
+        }
+
+        return null;
+    }
+
+    private void PersistPulseBriefing(string runId, string trigger, string? briefing)
+    {
+        if (string.IsNullOrWhiteSpace(briefing) || IsSilentBriefing(briefing))
         {
             return;
         }

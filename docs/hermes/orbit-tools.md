@@ -241,12 +241,16 @@ Hierarchy: **project → workstreams (sub-areas) → tasks**. There is no nested
 
 | Tool | Method | Path | Inputs | Notes |
 |---|---|---|---|---|
-| `orbit_create_project` | POST | `/v1/agent/tools/orbit_create_project` | `name`, optional `summary`, `inOrbit` (default **true**) | Creates project and adds it to Pulse orbit |
+| `orbit_create_project` | POST | `/v1/agent/tools/orbit_create_project` | `name`, optional `summary`/`code`/`aliases`/`inOrbit` (default **true**), `force` | Creates project (Pulse orbit by default). Near-dupe name/alias → **409** with `candidates` unless `force=true` |
 | `orbit_create_workstream` | POST | `/v1/agent/tools/orbit_create_workstream` | `projectId`, `name`, optional `nextAction`, `actor`, `provenance` | Sub-area under a project |
 | `orbit_list_workstreams` | GET or POST | `/v1/agent/tools/orbit_list_workstreams` | `projectId` | Lists sub-areas for a project |
 | `orbit_create_task` | POST | `/v1/agent/tools/orbit_create_task` | `title`, `projectId`, optional `workstreamId`, `status`, `nextAction`, `body`, `actor`, `provenance` | Creates Orbit-owned task; nest with `workstreamId` |
-| `orbit_update_task` | POST | `/v1/agent/tools/orbit_update_task` | `id`, optional `title`/`status`/`nextAction`/`body`, `actor`, `provenance` | Status must be a known enum |
-| `orbit_update_project` | POST | `/v1/agent/tools/orbit_update_project` | `id`, optional `name`/`summary`/`accentColor` | Accent: `#RRGGBB` or preset `blue`/`sky`/`teal`/`green`/`amber`/`rose`/`violet`/`slate`; `default`/`none`/`clear` restores theme stripe |
+| `orbit_update_task` | POST | `/v1/agent/tools/orbit_update_task` | `id`, optional `title`/`status`/`nextAction`/`body`/`dueAt`/`priority`/`urgency`/`projectId`/`workstreamId`/`clearWorkstream`, `actor`, `provenance` | Move via `projectId` (clears workstream unless new `workstreamId`); audited |
+| `orbit_update_project` | POST | `/v1/agent/tools/orbit_update_project` | `id`, optional `name`/`summary`/`code`/`clearCode`/`addAliases`/`removeAliases`/`accentColor` | Accent presets as before; aliases are operator nicknames for matching |
+| `orbit_merge_project` | POST | `/v1/agent/tools/orbit_merge_project` | `sourceProjectId`, `targetProjectId`, optional `previewOnly`, `force`, `actor` | Operator-initiated merge; archives source; audited |
+| `orbit_add_project_alias` | POST | `/v1/agent/tools/orbit_add_project_alias` | `projectId`, `alias` | Add globally unique normalized alias |
+| `orbit_remove_project_alias` | POST | `/v1/agent/tools/orbit_remove_project_alias` | `projectId`, `alias` or `aliasId` | Remove alias |
+| `orbit_list_project_aliases` | GET or POST | `/v1/agent/tools/orbit_list_project_aliases` | `projectId` | List aliases |
 | `orbit_archive_entity` | POST | `/v1/agent/tools/orbit_archive_entity` | `entityType` (`project`\|`task`\|`note`), `entityId`, optional `actor` | Soft-archives (leaves workbench); project archives child tasks/notes too |
 | `orbit_create_note` | POST | `/v1/agent/tools/orbit_create_note` | `text`, optional `projectId`, `provenance` | Limbo when no project; may trigger suggestions |
 | `orbit_link_entities` | POST | `/v1/agent/tools/orbit_link_entities` | `sourceType`, `sourceId`, `targetType`, `targetId`, `relationshipType`, optional `projectId`, `provenance` | Inserts `relationships` row |

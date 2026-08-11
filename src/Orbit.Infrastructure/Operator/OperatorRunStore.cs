@@ -90,6 +90,46 @@ public sealed class OperatorRunStore
         return ReadAll(cmd);
     }
 
+    /// <summary>
+    /// Live status while status stays <c>running</c> (surfaced on the Workbench duty banner).
+    /// Overwrites <see cref="OperatorRunRecord.BriefingSummary"/> until <see cref="Complete"/>.
+    /// </summary>
+    public OperatorRunRecord? SetProgress(string id, string progressText)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(id);
+        if (string.IsNullOrWhiteSpace(progressText))
+        {
+            return Get(id);
+        }
+
+        var now = DateTime.UtcNow.ToString("O");
+        var text = progressText.Trim();
+        if (text.Length > 400)
+        {
+            text = text[..400] + "…";
+        }
+
+        using var connection = _factory.CreateConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            """
+            UPDATE operator_runs
+            SET briefing_summary = $briefing,
+                updated_at = $t
+            WHERE id = $id AND status = $status;
+            """;
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.Parameters.AddWithValue("$briefing", text);
+        cmd.Parameters.AddWithValue("$t", now);
+        cmd.Parameters.AddWithValue("$status", OperatorRunStatuses.Running);
+        if (cmd.ExecuteNonQuery() == 0)
+        {
+            return null;
+        }
+
+        return Get(id);
+    }
+
     public OperatorRunRecord? Complete(
         string id,
         string status,
@@ -168,6 +208,87 @@ public sealed class OperatorRunStore
         cmd.CommandText = "SELECT COUNT(*) FROM operator_runs WHERE status = $status;";
         cmd.Parameters.AddWithValue("$status", OperatorRunStatuses.Running);
         return Convert.ToInt32(cmd.ExecuteScalar());
+    }
+
+    /// <summary>
+    /// Force-complete runs stuck in <c>running</c> longer than <paramref name="maxAge"/>.
+    /// Without this, a single hung calendar/email run permanently blocks <see cref="CountRunning"/> (MaxConcurrentRuns=1).
+    /// Pass <see cref="TimeSpan.Zero"/> (or negative) to abandon <b>all</b> running rows (Host restart recovery).
+    /// </summary>
+    public int AbandonStaleRunning(TimeSpan maxAge, string reason = "Abandoned stale operator run.")
+    {
+        var now = DateTime.UtcNow.ToString("O");
+        using var connection = _factory.CreateConnection();
+        using var cmd = connection.CreateCommand();
+        if (maxAge <= TimeSpan.Zero)
+        {
+            cmd.CommandText =
+                """
+                UPDATE operator_runs
+                SET status = $status,
+                    briefing_summary = COALESCE(NULLIF(TRIM(briefing_summary), ''), $briefing),
+                    error_text = COALESCE(error_text, $error),
+                    updated_at = $t,
+                    completed_at = $t
+                WHERE status = $running;
+                """;
+        }
+        else
+        {
+            var cutoff = DateTime.UtcNow.Subtract(maxAge).ToString("O");
+            cmd.CommandText =
+                """
+                UPDATE operator_runs
+                SET status = $status,
+                    briefing_summary = COALESCE(NULLIF(TRIM(briefing_summary), ''), $briefing),
+                    error_text = COALESCE(error_text, $error),
+                    updated_at = $t,
+                    completed_at = $t
+                WHERE status = $running
+                  AND created_at < $cutoff;
+                """;
+            cmd.Parameters.AddWithValue("$cutoff", cutoff);
+        }
+
+        cmd.Parameters.AddWithValue("$status", OperatorRunStatuses.Failed);
+        cmd.Parameters.AddWithValue("$briefing", reason);
+        cmd.Parameters.AddWithValue("$error", reason);
+        cmd.Parameters.AddWithValue("$t", now);
+        cmd.Parameters.AddWithValue("$running", OperatorRunStatuses.Running);
+        return cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>Abandon every <c>running</c> row — used on Host startup after crash/restart.</summary>
+    public int AbandonAllRunning(string reason = "Cleared on Host startup (previous session interrupted).") =>
+        AbandonStaleRunning(TimeSpan.Zero, reason);
+
+    /// <summary>Newest running run for a trigger, optionally matching an email id in the payload.</summary>
+    public OperatorRunRecord? FindRunning(string triggerKind, string? emailId = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(triggerKind);
+        foreach (var run in ListRecent(40))
+        {
+            if (!string.Equals(run.Status, OperatorRunStatuses.Running, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!string.Equals(run.TriggerKind, triggerKind, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(emailId)
+                && (run.TriggerPayloadJson is null
+                    || !run.TriggerPayloadJson.Contains(emailId, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            return run;
+        }
+
+        return null;
     }
 
     private static List<OperatorRunRecord> ReadAll(SqliteCommand cmd)

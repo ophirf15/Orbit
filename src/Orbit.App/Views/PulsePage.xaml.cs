@@ -88,6 +88,7 @@ public sealed partial class PulsePage : Page
             {
                 DayBriefText.Text = "Could not load pulse from Core Host.";
                 _allConcerns = [];
+                BindBriefing(null);
                 ApplyConcernFilter();
                 GeneratedAtText.Text = string.Empty;
                 var host = App.HostConnection?.LastStatus;
@@ -117,6 +118,15 @@ public sealed partial class PulsePage : Page
             ConcernsHeader.Text = _allConcerns.Count == 0
                 ? "Needs you now"
                 : $"Needs you now · {_allConcerns.Count}";
+
+            var unmatched = pulse.UnmatchedMail?.ToList() ?? [];
+            UnmatchedMailList.ItemsSource = unmatched;
+            UnmatchedMailPanel.Visibility = unmatched.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            UnmatchedMailHeader.Text = unmatched.Count == 0
+                ? "Unmatched mail"
+                : $"Unmatched mail · {unmatched.Count}";
+
+            BindBriefing(pulse.Briefing);
             ApplyConcernFilter();
             StatusText.Text = string.Empty;
         }
@@ -131,16 +141,49 @@ public sealed partial class PulsePage : Page
         }
     }
 
+    private void BindBriefing(PulseBriefingVm? briefing)
+    {
+        BindBriefingSection(
+            BriefingMeetingsHeader,
+            BriefingMeetingsList,
+            briefing?.UpcomingMeetings?.Select(m => m.Line).ToList());
+        BindBriefingSection(
+            BriefingActionsHeader,
+            BriefingActionsList,
+            briefing?.TopActions?.Select(a => a.Line).ToList());
+        BindBriefingSection(
+            BriefingWaitingHeader,
+            BriefingWaitingList,
+            briefing?.WaitingOn?.Select(w => w.Line).ToList());
+        BindBriefingSection(
+            BriefingAlertsHeader,
+            BriefingAlertsList,
+            briefing?.Alerts?.Select(a => a.Message).ToList());
+        BindBriefingSection(
+            BriefingChangesHeader,
+            BriefingChangesList,
+            briefing?.RecentChanges?.Select(c => c.Line).ToList());
+
+        var any = (briefing?.UpcomingMeetings?.Count ?? 0)
+            + (briefing?.TopActions?.Count ?? 0)
+            + (briefing?.WaitingOn?.Count ?? 0)
+            + (briefing?.Alerts?.Count ?? 0)
+            + (briefing?.RecentChanges?.Count ?? 0)
+            > 0;
+        BriefingEmptyText.Visibility = any ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private static void BindBriefingSection(TextBlock header, ItemsControl list, IList<string>? lines)
+    {
+        var items = lines ?? [];
+        list.ItemsSource = items;
+        var visible = items.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        header.Visibility = visible;
+        list.Visibility = visible;
+    }
+
     private void BindProjects()
     {
-        foreach (var p in _projects)
-        {
-            if (string.IsNullOrWhiteSpace(p.SummaryLine))
-            {
-                // SummaryLine is computed property — ensure Summary set
-            }
-        }
-
         ProjectsRepeater.ItemsSource = _projects;
         ProjectsEmptyText.Visibility = _projects.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -208,5 +251,47 @@ public sealed partial class PulsePage : Page
         PulseHome.Visibility = Visibility.Collapsed;
         DetailFrame.Visibility = Visibility.Visible;
         DetailFrame.Navigate(typeof(ConcernBriefPage), concern.TaskId);
+    }
+
+    private async void UnmatchedMailList_ItemClick(object sender, ItemClickEventArgs e)
+    {
+        if (e.ClickedItem is not PulseUnmatchedMailVm mail || string.IsNullOrWhiteSpace(mail.SuggestionId))
+        {
+            return;
+        }
+
+        if (XamlRoot is null)
+        {
+            return;
+        }
+
+        try
+        {
+            using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+            var projects = await ProjectPickUi.LoadActiveProjectsAsync(client);
+            var pickerMessage = string.IsNullOrWhiteSpace(mail.Snippet)
+                ? mail.Summary
+                : $"{mail.Summary}\n\n{mail.Snippet}";
+            var projectId = await ProjectPickUi.ShowPickerAsync(
+                XamlRoot,
+                projects,
+                title: "Assign unmatched mail",
+                message: pickerMessage);
+            if (string.IsNullOrWhiteSpace(projectId))
+            {
+                return;
+            }
+
+            var ok = await client.AcceptSuggestionAsync(mail.SuggestionId, projectId);
+            StatusText.Text = ok ? "Mail assigned to project." : "Could not assign mail.";
+            if (ok)
+            {
+                await LoadAsync();
+            }
+        }
+        catch (Exception)
+        {
+            StatusText.Text = "Could not assign unmatched mail.";
+        }
     }
 }

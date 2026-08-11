@@ -174,15 +174,20 @@ public sealed class OrbitMcpTools(OrbitCoreClient core)
 
     [McpServerTool(Name = OrbitToolCatalog.CreateProject), Description(
         "Create a new Orbit project and add it to the Pulse orbit. "
-        + "Hierarchy: project → workstreams (sub-areas) → tasks. After create, use orbit_create_workstream and orbit_create_task.")]
+        + "Search/attach first: if a similar name or alias already exists, the tool returns HTTP 409 with candidates — do not force-create duplicates. "
+        + "Pass force=true only after the operator confirms create anyway. "
+        + "Hierarchy: project → workstreams (sub-areas) → tasks.")]
     public Task<string> CreateProject(
         [Description("Project name")] string name,
         [Description("Optional short summary")] string? summary = null,
+        [Description("Optional short code")] string? code = null,
+        [Description("Optional aliases to add on create")] string[]? aliases = null,
         [Description("Add to Pulse orbit (default true)")] bool inOrbit = true,
+        [Description("Create even when near-duplicate candidates exist (operator override)")] bool force = false,
         CancellationToken cancellationToken = default)
         => core.CallToolAsync(
             OrbitToolCatalog.CreateProject,
-            new { name, summary, inOrbit },
+            new { name, summary, code, aliases, inOrbit, force },
             cancellationToken);
 
     [McpServerTool(Name = OrbitToolCatalog.CreateWorkstream), Description(
@@ -238,7 +243,8 @@ public sealed class OrbitMcpTools(OrbitCoreClient core)
             cancellationToken);
 
     [McpServerTool(Name = OrbitToolCatalog.UpdateTask), Description(
-        "Update an Orbit task title/status/nextAction/body/dueAt/priority/urgency (audited mutation). priority: 1=important 0=less. urgency: 1=urgent 0=less.")]
+        "Update an Orbit task (audited). Supports move via projectId (+ optional workstreamId). "
+        + "priority: 1=important 0=less. urgency: 1=urgent 0=less. clearWorkstream=true drops workstream.")]
     public Task<string> UpdateTask(
         [Description("Task GUID")] string id,
         [Description("Optional new title")] string? title = null,
@@ -248,6 +254,9 @@ public sealed class OrbitMcpTools(OrbitCoreClient core)
         [Description("Optional due date (YYYY-MM-DD or ISO)")] string? dueAt = null,
         [Description("Optional importance: 1=important, 0=less important")] int? priority = null,
         [Description("Optional urgency override: 1=urgent, 0=less urgent")] int? urgency = null,
+        [Description("Optional destination project GUID (moves the task)")] string? projectId = null,
+        [Description("Optional workstream GUID on the (new) project")] string? workstreamId = null,
+        [Description("When true, clear workstream assignment")] bool clearWorkstream = false,
         [Description("Optional actor label")] string? actor = null,
         [Description("Optional provenance JSON object")] string? provenanceJson = null,
         CancellationToken cancellationToken = default)
@@ -263,24 +272,85 @@ public sealed class OrbitMcpTools(OrbitCoreClient core)
                 dueAt,
                 priority,
                 urgency,
+                projectId,
+                workstreamId,
+                clearWorkstream,
                 actor,
                 provenance = ParseOptionalJson(provenanceJson),
             },
             cancellationToken);
 
     [McpServerTool(Name = OrbitToolCatalog.UpdateProject), Description(
-        "Update an Orbit project name, summary, and/or workbench stripe color. "
+        "Update an Orbit project name, summary, code, aliases, dossier fields, and/or workbench stripe color. "
+        + "dossier is structured operator context: address, ownerClient, phase, portfolio, linkedFolder, "
+        + "criticalContacts[{name,role,personId,contact}], mailboxSources[], calendarSources[], currentPriorities[]. "
+        + "addAliases/removeAliases are operator nicknames used for email matching. "
         + "accentColor accepts #RRGGBB or preset names: blue, sky, teal, green, amber, rose, violet, slate; "
         + "use default/none/clear to restore the theme stripe.")]
     public Task<string> UpdateProject(
         [Description("Project GUID")] string id,
         [Description("Optional new project name")] string? name = null,
         [Description("Optional project summary")] string? summary = null,
+        [Description("Optional short code")] string? code = null,
+        [Description("When true, clear the project code")] bool clearCode = false,
+        [Description("Aliases to add")] string[]? addAliases = null,
+        [Description("Aliases (or alias ids) to remove")] string[]? removeAliases = null,
         [Description("Optional accent: #RRGGBB or preset name (blue, teal, …)")] string? accentColor = null,
+        [Description("Optional dossier patch object")] object? dossier = null,
         CancellationToken cancellationToken = default)
         => core.CallToolAsync(
             OrbitToolCatalog.UpdateProject,
-            new { id, name, summary, accentColor },
+            new { id, name, summary, code, clearCode, addAliases, removeAliases, accentColor, dossier },
+            cancellationToken);
+
+    [McpServerTool(Name = OrbitToolCatalog.MergeProject), Description(
+        "Operator-initiated merge of one project into another. Moves tasks/notes/links/aliases, "
+        + "archives the source, writes audit events. Call with previewOnly=true first to see counts. "
+        + "Pass force=true only after the operator confirms past warnings (e.g. dual home folders). "
+        + "Never invent personal site names — use project GUIDs the operator chose.")]
+    public Task<string> MergeProject(
+        [Description("Source project GUID (will be archived)")] string sourceProjectId,
+        [Description("Target project GUID (receives moved rows)")] string targetProjectId,
+        [Description("When true, return preview counts only")] bool previewOnly = false,
+        [Description("Proceed despite warnings")] bool force = false,
+        [Description("Optional actor label")] string? actor = null,
+        CancellationToken cancellationToken = default)
+        => core.CallToolAsync(
+            OrbitToolCatalog.MergeProject,
+            new { sourceProjectId, targetProjectId, previewOnly, force, actor },
+            cancellationToken);
+
+    [McpServerTool(Name = OrbitToolCatalog.AddProjectAlias), Description(
+        "Add an operator-defined alias/nickname for a project (used for email and create-project matching).")]
+    public Task<string> AddProjectAlias(
+        [Description("Project GUID")] string projectId,
+        [Description("Alias text")] string alias,
+        CancellationToken cancellationToken = default)
+        => core.CallToolAsync(
+            OrbitToolCatalog.AddProjectAlias,
+            new { projectId, alias },
+            cancellationToken);
+
+    [McpServerTool(Name = OrbitToolCatalog.RemoveProjectAlias), Description(
+        "Remove a project alias by text or alias id.")]
+    public Task<string> RemoveProjectAlias(
+        [Description("Project GUID")] string projectId,
+        [Description("Alias text")] string? alias = null,
+        [Description("Alias GUID")] string? aliasId = null,
+        CancellationToken cancellationToken = default)
+        => core.CallToolAsync(
+            OrbitToolCatalog.RemoveProjectAlias,
+            new { projectId, alias, aliasId },
+            cancellationToken);
+
+    [McpServerTool(Name = OrbitToolCatalog.ListProjectAliases), Description(
+        "List operator-defined aliases for a project.")]
+    public Task<string> ListProjectAliases(
+        [Description("Project GUID")] string projectId,
+        CancellationToken cancellationToken = default)
+        => core.CallToolAsync(
+            OrbitToolCatalog.ListProjectAliases,
+            new { projectId },
             cancellationToken);
 
     [McpServerTool(Name = OrbitToolCatalog.CreateNote), Description(

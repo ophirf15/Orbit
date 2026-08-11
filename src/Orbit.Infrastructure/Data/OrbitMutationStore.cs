@@ -20,7 +20,10 @@ public sealed class OrbitMutationStore
         MutationProvenance? provenance = null,
         string? nextAction = null,
         string? body = null,
-        string? workstreamId = null)
+        string? workstreamId = null,
+        string? sourceKind = null,
+        double? sourceConfidence = null,
+        string? sourceMatchReason = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(title);
         ArgumentException.ThrowIfNullOrWhiteSpace(projectId);
@@ -44,6 +47,8 @@ public sealed class OrbitMutationStore
         var requestedBy = NormalizeActor(provenance?.ResolveActor(actor) ?? actor);
         var next = string.IsNullOrWhiteSpace(nextAction) ? null : nextAction.Trim();
         var brief = string.IsNullOrWhiteSpace(body) ? null : body.Trim();
+        var kind = string.IsNullOrWhiteSpace(sourceKind) ? null : sourceKind.Trim();
+        var reason = string.IsNullOrWhiteSpace(sourceMatchReason) ? null : sourceMatchReason.Trim();
 
         using var connection = _factory.CreateConnection();
         using var tx = connection.BeginTransaction();
@@ -54,10 +59,12 @@ public sealed class OrbitMutationStore
                 """
                 INSERT INTO tasks (
                   id, project_id, workstream_id, title, body, status, priority,
-                  next_action, created_at, updated_at)
+                  next_action, source_kind, source_confidence, source_match_reason,
+                  created_at, updated_at)
                 VALUES (
                   $id, $project, $ws, $title, $body, $status, NULL,
-                  $next, $t, $t);
+                  $next, $skind, $sconf, $sreason,
+                  $t, $t);
                 """;
             cmd.Parameters.AddWithValue("$id", id);
             cmd.Parameters.AddWithValue("$project", projectId);
@@ -66,6 +73,9 @@ public sealed class OrbitMutationStore
             cmd.Parameters.AddWithValue("$body", (object?)brief ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$status", taskStatus);
             cmd.Parameters.AddWithValue("$next", (object?)next ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$skind", (object?)kind ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$sconf", (object?)sourceConfidence ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$sreason", (object?)reason ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$t", now);
             cmd.ExecuteNonQuery();
         }
@@ -77,7 +87,18 @@ public sealed class OrbitMutationStore
             EntityTypes.Task,
             id,
             requestedBy,
-            new { title = trimmed, projectId, workstreamId = wsId, status = taskStatus, nextAction = next, body = brief },
+            new
+            {
+                title = trimmed,
+                projectId,
+                workstreamId = wsId,
+                status = taskStatus,
+                nextAction = next,
+                body = brief,
+                sourceKind = kind,
+                sourceConfidence,
+                sourceMatchReason = reason,
+            },
             now,
             provenance);
         tx.Commit();
@@ -91,6 +112,9 @@ public sealed class OrbitMutationStore
             NextAction = next,
             Body = brief,
             WorkstreamId = wsId,
+            SourceKind = kind,
+            SourceConfidence = sourceConfidence,
+            SourceMatchReason = reason,
         };
     }
 
@@ -216,14 +240,17 @@ public sealed class OrbitMutationStore
         string? body = null,
         string? dueAt = null,
         int? priority = null,
-        int? urgency = null)
+        int? urgency = null,
+        string? projectId = null,
+        string? workstreamId = null,
+        bool clearWorkstream = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(taskId);
         if (title is null && status is null && nextAction is null && body is null && dueAt is null
-            && priority is null && urgency is null)
+            && priority is null && urgency is null && projectId is null && workstreamId is null && !clearWorkstream)
         {
             throw new ArgumentException(
-                "At least one of title, status, nextAction, body, dueAt, priority, or urgency is required.");
+                "At least one of title, status, nextAction, body, dueAt, priority, urgency, projectId, or workstreamId is required.");
         }
 
         if (status is not null && !TaskStatuses.All.Contains(status.Trim()))
@@ -253,7 +280,7 @@ public sealed class OrbitMutationStore
             find.Transaction = tx;
             find.CommandText =
                 """
-                SELECT project_id, title, status, next_action, body, due_at, priority, urgency
+                SELECT project_id, workstream_id, title, status, next_action, body, due_at, priority, urgency
                 FROM tasks
                 WHERE id = $id AND archived_at IS NULL
                 LIMIT 1;
@@ -265,14 +292,15 @@ public sealed class OrbitMutationStore
                 throw new ArgumentException("Task was not found.", nameof(taskId));
             }
 
-            var projectId = reader.GetString(0);
-            var currentTitle = reader.GetString(1);
-            var currentStatus = reader.GetString(2);
-            var currentNext = reader.IsDBNull(3) ? null : reader.GetString(3);
-            var currentBody = reader.IsDBNull(4) ? null : reader.GetString(4);
-            var currentDue = reader.IsDBNull(5) ? null : reader.GetString(5);
-            var currentPriority = reader.IsDBNull(6) ? (int?)null : reader.GetInt32(6);
-            var currentUrgency = reader.IsDBNull(7) ? (int?)null : reader.GetInt32(7);
+            var currentProjectId = reader.GetString(0);
+            var currentWorkstreamId = reader.IsDBNull(1) ? null : reader.GetString(1);
+            var currentTitle = reader.GetString(2);
+            var currentStatus = reader.GetString(3);
+            var currentNext = reader.IsDBNull(4) ? null : reader.GetString(4);
+            var currentBody = reader.IsDBNull(5) ? null : reader.GetString(5);
+            var currentDue = reader.IsDBNull(6) ? null : reader.GetString(6);
+            var currentPriority = reader.IsDBNull(7) ? (int?)null : reader.GetInt32(7);
+            var currentUrgency = reader.IsDBNull(8) ? (int?)null : reader.GetInt32(8);
             reader.Close();
 
             var newTitle = string.IsNullOrWhiteSpace(title) ? currentTitle : title.Trim();
@@ -283,12 +311,51 @@ public sealed class OrbitMutationStore
             var newPriority = priority ?? currentPriority;
             var newUrgency = urgency ?? currentUrgency;
 
+            var newProjectId = currentProjectId;
+            if (!string.IsNullOrWhiteSpace(projectId))
+            {
+                newProjectId = projectId.Trim();
+                EnsureProject(newProjectId);
+            }
+
+            string? newWorkstreamId = currentWorkstreamId;
+            var projectChanged = !string.Equals(currentProjectId, newProjectId, StringComparison.Ordinal);
+            if (projectChanged && workstreamId is null && !clearWorkstream)
+            {
+                // Moving projects drops workstream unless a valid target workstream is supplied.
+                newWorkstreamId = null;
+            }
+
+            if (clearWorkstream)
+            {
+                newWorkstreamId = null;
+            }
+            else if (workstreamId is not null)
+            {
+                if (string.IsNullOrWhiteSpace(workstreamId))
+                {
+                    newWorkstreamId = null;
+                }
+                else
+                {
+                    newWorkstreamId = workstreamId.Trim();
+                    EnsureWorkstream(newProjectId, newWorkstreamId);
+                }
+            }
+            else if (projectChanged && currentWorkstreamId is not null && newWorkstreamId is not null)
+            {
+                // Defensive: ensure leftover workstream belongs to the new project.
+                EnsureWorkstream(newProjectId, newWorkstreamId);
+            }
+
             using var upd = connection.CreateCommand();
             upd.Transaction = tx;
             upd.CommandText =
                 """
                 UPDATE tasks
-                SET title = $title,
+                SET project_id = $project,
+                    workstream_id = $ws,
+                    title = $title,
                     status = $status,
                     next_action = $next,
                     body = $body,
@@ -298,6 +365,8 @@ public sealed class OrbitMutationStore
                     updated_at = $t
                 WHERE id = $id;
                 """;
+            upd.Parameters.AddWithValue("$project", newProjectId);
+            upd.Parameters.AddWithValue("$ws", (object?)newWorkstreamId ?? DBNull.Value);
             upd.Parameters.AddWithValue("$title", newTitle);
             upd.Parameters.AddWithValue("$status", newStatus);
             upd.Parameters.AddWithValue("$next", (object?)newNext ?? DBNull.Value);
@@ -308,6 +377,17 @@ public sealed class OrbitMutationStore
             upd.Parameters.AddWithValue("$t", now);
             upd.Parameters.AddWithValue("$id", taskId);
             upd.ExecuteNonQuery();
+
+            if (projectChanged)
+            {
+                applied["projectId"] = newProjectId;
+                applied["previousProjectId"] = currentProjectId;
+            }
+
+            if (!string.Equals(currentWorkstreamId, newWorkstreamId, StringComparison.Ordinal))
+            {
+                applied["workstreamId"] = newWorkstreamId ?? string.Empty;
+            }
 
             if (!string.Equals(currentTitle, newTitle, StringComparison.Ordinal))
             {
@@ -347,7 +427,7 @@ public sealed class OrbitMutationStore
             WriteAudit(
                 connection,
                 tx,
-                "task.updated",
+                projectChanged ? "task.moved" : "task.updated",
                 EntityTypes.Task,
                 taskId,
                 requestedBy,
@@ -360,10 +440,11 @@ public sealed class OrbitMutationStore
             {
                 Id = taskId,
                 Title = newTitle,
-                ProjectId = projectId,
+                ProjectId = newProjectId,
                 Status = newStatus,
                 NextAction = newNext,
                 Body = newBody,
+                WorkstreamId = newWorkstreamId,
                 DueAt = newDue,
                 Priority = newPriority,
                 Urgency = newUrgency,
@@ -664,6 +745,12 @@ public sealed class MutationTaskResult
     public int? Priority { get; init; }
 
     public int? Urgency { get; init; }
+
+    public string? SourceKind { get; init; }
+
+    public double? SourceConfidence { get; init; }
+
+    public string? SourceMatchReason { get; init; }
 }
 
 public sealed class MutationWorkstreamResult

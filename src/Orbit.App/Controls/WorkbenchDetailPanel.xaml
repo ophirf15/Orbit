@@ -145,7 +145,8 @@
                             <TextBlock
                                 FontSize="16"
                                 FontWeight="SemiBold"
-                                Text="Hermes" />
+                                Text="Hermes"
+                                VerticalAlignment="Center" />
                             <TextBlock
                                 Opacity="0.65"
                                 Style="{StaticResource CaptionTextBlockStyle}"
@@ -275,6 +276,17 @@
                         <StackPanel Orientation="Horizontal" Spacing="6">
                             <FontIcon FontSize="14" Glyph="&#xE8B7;" />
                             <TextBlock Text="Archive project" />
+                        </StackPanel>
+                    </Button>
+                    <Button
+                        x:Name="MergeProjectButton"
+                        Click="MergeProject_Click"
+                        CornerRadius="10"
+                        Padding="14,8"
+                        Style="{StaticResource SubtleButtonStyle}">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <FontIcon FontSize="14" Glyph="&#xE8DE;" />
+                            <TextBlock Text="Merge into…" />
                         </StackPanel>
                     </Button>
                     <TextBlock

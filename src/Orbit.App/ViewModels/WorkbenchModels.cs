@@ -69,6 +69,10 @@ public sealed class ProjectCellVm
 
     public bool HasSavedLayout { get; set; }
 
+    public bool DossierEmpty { get; set; }
+
+    public bool MissingNextAction { get; set; }
+
     public string BlockerBadgeText =>
         OpenBlockerCount <= 0 ? string.Empty : OpenBlockerCount == 1 ? "1 blocker" : $"{OpenBlockerCount} blockers";
 
@@ -77,6 +81,25 @@ public sealed class ProjectCellVm
 
     public string SuggestionText =>
         PendingSuggestionCount <= 0 ? string.Empty : PendingSuggestionCount == 1 ? "1 suggestion" : $"{PendingSuggestionCount} suggestions";
+
+    public string HygieneText
+    {
+        get
+        {
+            var bits = new List<string>();
+            if (DossierEmpty)
+            {
+                bits.Add("empty dossier");
+            }
+
+            if (MissingNextAction)
+            {
+                bits.Add("needs next action");
+            }
+
+            return string.Join(" · ", bits);
+        }
+    }
 
     public string RecentText
     {
@@ -121,6 +144,40 @@ public sealed class CellLineVm
 
     /// <summary>1 = Urgent, 0 = Less urgent, null = auto from due/blocked.</summary>
     public int? Urgency { get; set; }
+
+    public string? SourceKind { get; set; }
+
+    public double? SourceConfidence { get; set; }
+
+    public string? SourceMatchReason { get; set; }
+
+    public string? SourceLine
+    {
+        get
+        {
+            if (!string.Equals(SourceKind, "email", StringComparison.OrdinalIgnoreCase)
+                && string.IsNullOrWhiteSpace(SourceMatchReason))
+            {
+                return null;
+            }
+
+            var why = SourceMatchReason switch
+            {
+                "name" => "matched project name",
+                "code" => "matched project code",
+                "alias" => "matched alias",
+                "name_token" => "matched name token",
+                "operator" => "assigned by you",
+                "explicit" => "explicit project link",
+                null or "" => null,
+                _ => $"matched via {SourceMatchReason}",
+            };
+            var conf = SourceConfidence is { } c ? $" · {c:P0}" : string.Empty;
+            return why is null
+                ? $"from email{conf}"
+                : $"from email · {why}{conf}";
+        }
+    }
 
     public string DisplayLine =>
         string.IsNullOrWhiteSpace(Status)
@@ -189,6 +246,14 @@ public sealed class ProjectContextVm
 
     public string? Summary { get; set; }
 
+    public string? Code { get; set; }
+
+    public ProjectDossierVm? Dossier { get; set; }
+
+    public bool DossierEmpty { get; set; } = true;
+
+    public IList<ProjectAliasVm> Aliases { get; set; } = [];
+
     public IList<CellLineVm> Tasks { get; set; } = [];
 
     public IList<CellLineVm> CompletedTasks { get; set; } = [];
@@ -204,6 +269,36 @@ public sealed class ProjectContextVm
     public IList<ContextSuggestionVm> Suggestions { get; set; } = [];
 
     public IList<ContextFileVm> Files { get; set; } = [];
+}
+
+public sealed class ProjectDossierVm
+{
+    public int Version { get; set; } = 1;
+
+    public string? Address { get; set; }
+
+    public string? OwnerClient { get; set; }
+
+    public string? Phase { get; set; }
+
+    public string? Portfolio { get; set; }
+
+    public string? LinkedFolder { get; set; }
+
+    public IList<string> CurrentPriorities { get; set; } = [];
+
+    public IList<string> MailboxSources { get; set; } = [];
+
+    public IList<string> CalendarSources { get; set; } = [];
+
+    public bool Empty { get; set; } = true;
+}
+
+public sealed class ProjectAliasVm
+{
+    public string Id { get; set; } = string.Empty;
+
+    public string Alias { get; set; } = string.Empty;
 }
 
 public sealed class ContextContactVm

@@ -60,6 +60,10 @@ public sealed class ProjectCellRecord
     public double? BoardW { get; init; }
 
     public double? BoardH { get; init; }
+
+    public bool DossierEmpty { get; init; }
+
+    public bool MissingNextAction { get; init; }
 }
 
 public sealed class CellLineRecord
@@ -83,6 +87,12 @@ public sealed class CellLineRecord
 
     /// <summary>1 = Urgent, 0 = Less urgent, null = auto from due/blockers.</summary>
     public int? Urgency { get; init; }
+
+    public string? SourceKind { get; init; }
+
+    public double? SourceConfidence { get; init; }
+
+    public string? SourceMatchReason { get; init; }
 }
 
 public sealed class LimboNoteRecord
@@ -121,6 +131,14 @@ public sealed class ProjectContextRecord
 
     public string? Summary { get; init; }
 
+    public string? Code { get; init; }
+
+    public ProjectDossier? Dossier { get; init; }
+
+    public bool DossierEmpty { get; init; } = true;
+
+    public IReadOnlyList<ProjectAliasItem> Aliases { get; init; } = [];
+
     public required IReadOnlyList<CellLineRecord> Tasks { get; init; }
 
     public required IReadOnlyList<CellLineRecord> CompletedTasks { get; init; }
@@ -136,6 +154,13 @@ public sealed class ProjectContextRecord
     public required IReadOnlyList<ContextSuggestionRecord> Suggestions { get; init; }
 
     public required IReadOnlyList<ContextFileRecord> Files { get; init; }
+}
+
+public sealed class ProjectAliasItem
+{
+    public required string Id { get; init; }
+
+    public required string Alias { get; init; }
 }
 
 public sealed class ContextNoteRecord

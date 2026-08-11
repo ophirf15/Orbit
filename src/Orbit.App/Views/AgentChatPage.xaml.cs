@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Orbit.Agent.Contracts.Hermes;
 using Orbit.Core.Settings;
 using Orbit.Infrastructure.Data;
@@ -13,26 +14,26 @@ namespace Orbit_App.Views;
 public sealed partial class AgentChatPage : Page
 {
     private readonly ObservableCollection<ChatBubbleVm> _messages = [];
-    private readonly ObservableCollection<RemoteConversationVm> _remoteSessions = [];
-    private readonly ObservableCollection<RemoteChangeVm> _remoteChanges = [];
-    private readonly ObservableCollection<PendingSuggestionVm> _operatorSuggestions = [];
     private readonly ObservableCollection<OperatorRuleVm> _operatorRules = [];
     private readonly ObservableCollection<OperatorMemoryVm> _operatorMemory = [];
     private ConversationRecord? _conversation;
     private string? _sessionId;
     private string? _sessionKey;
     private bool _busy;
+    private ChatBubbleVm? _statusBubble;
+    private DispatcherTimer? _idleTimer;
+    private int _idleTick;
+    private ScrollViewer? _messageScrollViewer;
+    private DateTimeOffset _lastStreamScrollUtc = DateTimeOffset.MinValue;
 
     public AgentChatPage()
     {
         InitializeComponent();
         MessageList.ItemsSource = _messages;
-        RemoteSessionList.ItemsSource = _remoteSessions;
-        RemoteChangeList.ItemsSource = _remoteChanges;
-        OperatorSuggestionList.ItemsSource = _operatorSuggestions;
         OperatorRuleList.ItemsSource = _operatorRules;
         OperatorMemoryList.ItemsSource = _operatorMemory;
         Loaded += OnLoaded;
+        Unloaded += (_, _) => StopIdleTimer();
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -71,7 +72,6 @@ public sealed partial class AgentChatPage : Page
             StatusText.Text = ex.Message;
         }
 
-        await RefreshRemoteActivityAsync();
         await RefreshOperatorAsync();
     }
 
@@ -89,7 +89,6 @@ public sealed partial class AgentChatPage : Page
         {
             using var core = new CoreHostClient(App.Settings, App.SettingsStore);
             var dash = await core.GetOperatorDashboardAsync();
-            _operatorSuggestions.Clear();
             _operatorRules.Clear();
             _operatorMemory.Clear();
             if (dash is null)
@@ -102,12 +101,7 @@ public sealed partial class AgentChatPage : Page
                 ? "No duty briefing yet. Push mail with Ctrl+Shift+O — results also show on the Workbench banner."
                 : dash.LatestBriefing;
             OperatorStatusText.Text =
-                $"{dash.LatestRunStatus ?? "idle"} · {dash.LatestTrigger ?? "—"} · {dash.Rules.Count} rule(s) · merges only below";
-
-            foreach (var s in dash.PendingSuggestions)
-            {
-                _operatorSuggestions.Add(s);
-            }
+                $"{dash.LatestRunStatus ?? "idle"} · {dash.LatestTrigger ?? "—"} · {dash.Rules.Count} rule(s) · review unmatched mail on Pulse";
 
             foreach (var r in dash.Rules)
             {
@@ -125,130 +119,6 @@ public sealed partial class AgentChatPage : Page
         }
     }
 
-    private async void SuggestionAccept_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button { Tag: string id })
-        {
-            return;
-        }
-
-        using var core = new CoreHostClient(App.Settings, App.SettingsStore);
-        var suggestion = _operatorSuggestions.FirstOrDefault(s => s.Id == id);
-        var projectId = suggestion?.ProjectId;
-        if (string.Equals(suggestion?.SuggestionType, "disambiguate_email_claim", StringComparison.Ordinal)
-            && string.IsNullOrWhiteSpace(projectId))
-        {
-            StatusText.Text = "Pick a project on the workbench first, or set ApplyProjectId via Always with a rule.";
-            return;
-        }
-
-        await core.AcceptSuggestionAsync(id, projectId);
-        await RefreshOperatorAsync();
-    }
-
-    private async void SuggestionAlways_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button { Tag: string id })
-        {
-            return;
-        }
-
-        using var core = new CoreHostClient(App.Settings, App.SettingsStore);
-        var suggestion = _operatorSuggestions.FirstOrDefault(s => s.Id == id);
-        await core.AcceptSuggestionAlwaysAsync(id, suggestion?.ProjectId);
-        await RefreshOperatorAsync();
-    }
-
-    private async void SuggestionReject_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not Button { Tag: string id })
-        {
-            return;
-        }
-
-        using var core = new CoreHostClient(App.Settings, App.SettingsStore);
-        await core.RejectSuggestionAsync(id);
-        await RefreshOperatorAsync();
-    }
-
-    private async Task RefreshRemoteActivityAsync()
-    {
-        try
-        {
-            using var core = new CoreHostClient(App.Settings, App.SettingsStore);
-            var activity = await core.GetRemoteActivityAsync();
-            _remoteSessions.Clear();
-            _remoteChanges.Clear();
-            if (activity is null)
-            {
-                RemoteStatusText.Text = "Core unreachable — remote activity unavailable.";
-                return;
-            }
-
-            foreach (var session in activity.Conversations)
-            {
-                _remoteSessions.Add(session);
-            }
-
-            foreach (var change in activity.Changes)
-            {
-                _remoteChanges.Add(change);
-            }
-
-            RemoteStatusText.Text = _remoteSessions.Count == 0 && _remoteChanges.Count == 0
-                ? "No Telegram sessions or remote mutations yet."
-                : $"{_remoteSessions.Count} session(s), {_remoteChanges.Count} change(s).";
-        }
-        catch (Exception ex)
-        {
-            RemoteStatusText.Text = $"Remote activity error: {ex.Message}";
-        }
-    }
-
-    private void RemoteSessionList_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (RemoteSessionList.SelectedItem is not RemoteConversationVm selected)
-        {
-            return;
-        }
-
-        OpenMappedConversation(selected.Id);
-    }
-
-    private void OpenMappedConversation(string conversationId)
-    {
-        try
-        {
-            OrbitLocalData.EnsureOpened();
-            var record = OrbitLocalData.Conversations.Get(conversationId);
-            if (record is null)
-            {
-                StatusText.Text = "Conversation not found locally.";
-                return;
-            }
-
-            _conversation = record;
-            _sessionId = record.HermesSessionId;
-            _sessionKey = record.HermesSessionKey;
-            _messages.Clear();
-            foreach (var msg in OrbitLocalData.Conversations.ListMessages(record.Id))
-            {
-                _messages.Add(ChatBubbleVm.FromStore(msg));
-            }
-
-            SessionStatusText.Text =
-                $"Opened {record.Channel} conversation {record.Id}" +
-                (string.IsNullOrWhiteSpace(record.HermesSessionId)
-                    ? string.Empty
-                    : $" · Hermes: {record.HermesSessionId}");
-            StatusText.Text = "Remote conversation loaded.";
-        }
-        catch (Exception ex)
-        {
-            StatusText.Text = ex.Message;
-        }
-    }
-
     private async void ProbeButton_Click(object sender, RoutedEventArgs e)
     {
         InputBox.Text = "What can you see right now in Orbit? Summarize route, focused project, workbench projects, and which Orbit tools you can use.";
@@ -260,6 +130,27 @@ public sealed partial class AgentChatPage : Page
         var text = InputBox.Text?.Trim() ?? string.Empty;
         InputBox.Text = string.Empty;
         await SendMessageCoreAsync(text);
+    }
+
+    private void InputBox_PreviewKeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
+    {
+        if (e.Key != Windows.System.VirtualKey.Enter)
+        {
+            return;
+        }
+
+        var shift = Microsoft.UI.Input.InputKeyboardSource
+            .GetKeyStateForCurrentThread(Windows.System.VirtualKey.Shift)
+            .HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+        if (shift)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        var text = InputBox.Text?.Trim() ?? string.Empty;
+        InputBox.Text = string.Empty;
+        _ = SendMessageCoreAsync(text);
     }
 
     private async Task SendMessageCoreAsync(string text)
@@ -284,7 +175,8 @@ public sealed partial class AgentChatPage : Page
         _busy = true;
         SendButton.IsEnabled = false;
         ProbeButton.IsEnabled = false;
-        StatusText.Text = "Streaming…";
+        InputBox.IsEnabled = false;
+        StatusText.Text = string.Empty;
 
         try
         {
@@ -292,7 +184,7 @@ public sealed partial class AgentChatPage : Page
             _messages.Add(new ChatBubbleVm { RoleLabel = "You", Text = text });
 
             var assistant = new ChatBubbleVm { RoleLabel = "Hermes", Text = string.Empty };
-            _messages.Add(assistant);
+            BeginInChatThinking();
 
             var history = OrbitLocalData.Conversations.ListMessages(_conversation.Id)
                 .Select(m => new HermesChatMessage { Role = NormalizeRole(m.Role), Content = m.Body })
@@ -306,6 +198,7 @@ public sealed partial class AgentChatPage : Page
 
             using var client = CreateClient();
             var buffer = new System.Text.StringBuilder();
+            var startedContent = false;
             await foreach (var delta in client.StreamChatAsync(new HermesChatRequest
             {
                 Messages = history,
@@ -316,16 +209,39 @@ public sealed partial class AgentChatPage : Page
             {
                 if (delta.Kind == HermesChatDeltaKind.Error)
                 {
+                    EndInChatThinking();
+                    if (!_messages.Contains(assistant))
+                    {
+                        _messages.Add(assistant);
+                    }
+
                     assistant.Text = delta.Text ?? "Error";
                     StatusText.Text = delta.Text ?? "Hermes error";
                     break;
                 }
 
+                if (delta.Kind == HermesChatDeltaKind.Progress)
+                {
+                    UpdateInChatProgress(delta);
+                    continue;
+                }
+
                 if (delta.Kind == HermesChatDeltaKind.Content && !string.IsNullOrEmpty(delta.Text))
                 {
+                    if (!startedContent)
+                    {
+                        startedContent = true;
+                        EndInChatThinking();
+                        _messages.Add(assistant);
+                    }
+
                     buffer.Append(delta.Text);
                     var snapshot = buffer.ToString();
-                    DispatcherQueue.TryEnqueue(() => assistant.Text = snapshot);
+                    DispatcherQueue.TryEnqueue(() =>
+                    {
+                        assistant.Text = snapshot;
+                        ScrollMessagesToEnd(throttle: true);
+                    });
                 }
 
                 if (delta.Kind == HermesChatDeltaKind.Done)
@@ -334,20 +250,42 @@ public sealed partial class AgentChatPage : Page
                 }
             }
 
+            EndInChatThinking();
+            if (!startedContent && buffer.Length == 0 && string.IsNullOrWhiteSpace(assistant.Text))
+            {
+                if (!_messages.Contains(assistant))
+                {
+                    _messages.Add(assistant);
+                }
+
+                assistant.Text = "(no reply text — Hermes may have only run tools)";
+            }
+            else if (startedContent || buffer.Length > 0)
+            {
+                if (!_messages.Contains(assistant))
+                {
+                    _messages.Add(assistant);
+                }
+            }
+
             var finalText = buffer.Length > 0 ? buffer.ToString() : assistant.Text;
-            if (!string.IsNullOrWhiteSpace(finalText))
+            if (!string.IsNullOrWhiteSpace(finalText)
+                && !finalText.StartsWith("(no reply", StringComparison.Ordinal))
             {
                 OrbitLocalData.Conversations.AppendMessage(_conversation.Id, "assistant", finalText);
                 assistant.Text = finalText;
-                StatusText.Text = "Done.";
+                StatusText.Text = string.Empty;
             }
-            else if (string.IsNullOrWhiteSpace(StatusText.Text) || StatusText.Text == "Streaming…")
+            else if (string.IsNullOrWhiteSpace(StatusText.Text))
             {
                 StatusText.Text = "Empty response.";
             }
+
+            ScrollMessagesToEnd();
         }
         catch (Exception ex)
         {
+            EndInChatThinking();
             StatusText.Text = ex.Message;
         }
         finally
@@ -355,7 +293,132 @@ public sealed partial class AgentChatPage : Page
             _busy = false;
             SendButton.IsEnabled = true;
             ProbeButton.IsEnabled = true;
+            InputBox.IsEnabled = true;
+            EndInChatThinking();
         }
+    }
+
+    private void BeginInChatThinking()
+    {
+        EndInChatThinking();
+        _idleTick = 0;
+        _statusBubble = new ChatBubbleVm
+        {
+            RoleLabel = "Hermes",
+            Text = HermesThinkingCopy.NextIdleLine(0),
+            IsStatus = true,
+        };
+        _messages.Add(_statusBubble);
+        ScrollMessagesToEnd();
+
+        _idleTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2.4) };
+        _idleTimer.Tick += IdleTimer_Tick;
+        _idleTimer.Start();
+    }
+
+    private void IdleTimer_Tick(object? sender, object e)
+    {
+        if (_statusBubble is null || _statusBubble.HasRealProgress)
+        {
+            return;
+        }
+
+        _idleTick++;
+        _statusBubble.Text = HermesThinkingCopy.NextIdleLine(_idleTick);
+    }
+
+    private void UpdateInChatProgress(HermesChatDelta delta)
+    {
+        if (_statusBubble is null)
+        {
+            BeginInChatThinking();
+        }
+
+        if (_statusBubble is null)
+        {
+            return;
+        }
+
+        _statusBubble.HasRealProgress = true;
+        _statusBubble.Text = HermesThinkingCopy.FromProgress(delta.Text, delta.ToolName, delta.Status);
+        DispatcherQueue.TryEnqueue(() => ScrollMessagesToEnd(throttle: true));
+    }
+
+    private void EndInChatThinking()
+    {
+        StopIdleTimer();
+        if (_statusBubble is not null)
+        {
+            _messages.Remove(_statusBubble);
+            _statusBubble = null;
+        }
+    }
+
+    private void StopIdleTimer()
+    {
+        if (_idleTimer is null)
+        {
+            return;
+        }
+
+        _idleTimer.Tick -= IdleTimer_Tick;
+        _idleTimer.Stop();
+        _idleTimer = null;
+    }
+
+    private void ScrollMessagesToEnd(bool throttle = false)
+    {
+        if (_messages.Count == 0)
+        {
+            return;
+        }
+
+        if (throttle)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (now - _lastStreamScrollUtc < TimeSpan.FromMilliseconds(120))
+            {
+                return;
+            }
+
+            _lastStreamScrollUtc = now;
+        }
+        else
+        {
+            _lastStreamScrollUtc = DateTimeOffset.UtcNow;
+        }
+
+        // Prefer ChangeView over ScrollIntoView — the latter recycles ListView containers and flashes the chat.
+        var scroll = _messageScrollViewer ??= FindDescendantScrollViewer(MessageList);
+        if (scroll is not null)
+        {
+            scroll.UpdateLayout();
+            scroll.ChangeView(null, scroll.ScrollableHeight, null, disableAnimation: true);
+            return;
+        }
+
+        MessageList.UpdateLayout();
+        MessageList.ScrollIntoView(_messages[^1]);
+    }
+
+    private static ScrollViewer? FindDescendantScrollViewer(DependencyObject root)
+    {
+        if (root is ScrollViewer sv)
+        {
+            return sv;
+        }
+
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            var found = FindDescendantScrollViewer(VisualTreeHelper.GetChild(root, i));
+            if (found is not null)
+            {
+                return found;
+            }
+        }
+
+        return null;
     }
 
     private static HermesHttpClient CreateClient()
@@ -391,6 +454,12 @@ public sealed class ChatBubbleVm : System.ComponentModel.INotifyPropertyChanged
     private string _text = string.Empty;
 
     public string RoleLabel { get; init; } = string.Empty;
+
+    public bool IsStatus { get; init; }
+
+    public bool HasRealProgress { get; set; }
+
+    public double TextOpacity => IsStatus ? 0.72 : 1.0;
 
     public string Text
     {

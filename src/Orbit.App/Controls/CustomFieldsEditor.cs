@@ -121,16 +121,20 @@ public static class CustomFieldsEditor
                     return;
                 }
 
+                // Label-only rename must not fire onChanged — that rebuilds the workbench tree mid-edit.
+                if (string.Equals(label, displayTitle, StringComparison.Ordinal))
+                {
+                    titleEdit.Visibility = Visibility.Collapsed;
+                    titleLabel.Visibility = Visibility.Visible;
+                    return;
+                }
+
                 if (await client.UpdateCustomFieldLabelAsync(entityType, fieldKey, label))
                 {
                     field.Label = label;
                     displayTitle = label;
                     titleLabel.Text = label;
                     statusHint?.Invoke("Field title saved.");
-                    if (onChanged is not null)
-                    {
-                        await onChanged();
-                    }
                 }
                 else
                 {
@@ -178,6 +182,8 @@ public static class CustomFieldsEditor
                 }
 
                 e.Handled = true;
+                // Enter already commits; skip the LostFocus that follows Focus() so we do not double-save.
+                suppressTitleCommit = true;
                 await CommitTitleAsync();
                 focusAfterEdit?.Focus(FocusState.Programmatic);
             };

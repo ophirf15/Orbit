@@ -10,9 +10,9 @@ Daily debug stays unpackaged (`WindowsPackageType=None`). Takeaway installs use 
 4. Launch Orbit from Start / Desktop. Data lives under `%LocalAppData%\Orbit\`.
 5. Optional Hermes: Settings → **Connect Hermes** (syncs `docs/hermes` skills + cron + MCP into `%LocalAppData%\hermes\`). Native Hermes gateway required separately.
 
-Includes self-contained `Orbit.App.exe` + `Orbit.Core.Host.exe` (x64), **`orbit-mcp/`** (`Orbit.Mcp.exe` Hermes stdio bridge), **and** `docs/hermes/` (SOUL, Orbit skills, portable cron/scripts). Windows 10 1809+ / Windows 11.
+Includes self-contained `Orbit.App.exe` + `Orbit.Core.Host.exe` (x64), **`orbit-mcp/`** (`Orbit.Mcp.exe` Hermes stdio bridge), **`outlook-launcher/`** (Classic Outlook Send to Orbit ribbon), **and** `docs/hermes/` (SOUL, Orbit skills, portable cron/scripts). Windows 10 1809+ / Windows 11.
 
-Installer also stages `%LocalAppData%\Orbit\orbit-mcp\`. Connect re-syncs that folder from `{app}\orbit-mcp` on upgrade so Hermes keeps a working MCP path.
+Installer also stages `%LocalAppData%\Orbit\orbit-mcp\` and `%LocalAppData%\Orbit\OutlookLauncher\`. Connect re-syncs MCP from `{app}\orbit-mcp` on upgrade. Outlook add-in registration is per-user via **Settings → Classic Outlook add-in → Install / Update**.
 
 If Hermes shows `Skill(s) not found … pulse-refresh`, the install is missing `docs/hermes` beside the EXE (old pack) or Connect was never re-run after upgrading — install a current setup and Connect again.
 

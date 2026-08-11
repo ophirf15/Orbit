@@ -1,0 +1,21 @@
+{
+  "name": "orbit-outlook-web-addin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Crash-safe Office.js Outlook add-in for Orbit (memo + project → Hermes)",
+  "scripts": {
+    "start": "office-addin-debugging start manifest.xml",
+    "stop": "office-addin-debugging stop manifest.xml",
+    "dev": "vite --host localhost --port 3000",
+    "build": "vite build",
+    "preview": "vite preview --host localhost --port 3000",
+    "certs": "office-addin-dev-certs install --days 365",
+    "validate": "office-addin-manifest validate manifest.xml"
+  },
+  "devDependencies": {
+    "office-addin-debugging": "^5.1.6",
+    "office-addin-dev-certs": "^1.13.5",
+    "office-addin-manifest": "^1.13.6",
+    "vite": "^5.4.11"
+  }
+}

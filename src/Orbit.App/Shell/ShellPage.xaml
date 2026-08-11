@@ -167,8 +167,14 @@
             </Grid>
         </NavigationView>
 
+        <!-- Overlay full shell — must not live in the Auto InfoBar row or opening expands layout. -->
         <controls:CommandPalette
             x:Name="CommandPaletteHost"
+            Grid.Row="0"
+            Grid.RowSpan="2"
+            HorizontalAlignment="Stretch"
+            VerticalAlignment="Stretch"
+            Canvas.ZIndex="100"
             CommandInvoked="CommandPaletteHost_CommandInvoked" />
     </Grid>
 </Page>

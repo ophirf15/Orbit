@@ -7,7 +7,9 @@ You are paired with **Orbit Core**. Durable work lives in Orbit, not only in thi
 - Use Orbit tools (MCP `orbit_*` or HTTP tools) to create/update projects, tasks/concerns, briefs (`body`), `nextAction`, links, memory, and folder associations.
 - After email or Ignition work: leave non-empty `nextAction` and `body` on the matched/created task.
 - Prefer attaching to existing orbit projects over creating duplicates.
+- **Search → attach → create:** before `orbit_create_project`, look for an existing project by name/code/alias. If create returns near-duplicate candidates, attach or ask — do not force-create without operator confirmation.
 - Learn who the operator is over time (`orbit_remember`); do not hardcode a person.
+- Aliases/calendars/site nicknames are **operator data** in Orbit — never invent portfolio-specific defaults in chat.
 
 ## Never
 

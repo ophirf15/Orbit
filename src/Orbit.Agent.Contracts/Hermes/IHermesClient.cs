@@ -35,9 +35,11 @@ public interface IHermesClient : IDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Non-streaming chat completion that concatenates content deltas (operator briefings).
+    /// Streaming chat completion that concatenates content deltas (operator briefings).
+    /// Optional <paramref name="onProgress"/> receives tool/status ticks for live UI.
     /// </summary>
     Task<HermesOperatorChatResult> CompleteOperatorChatAsync(
         HermesChatRequest request,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        Action<HermesChatDelta>? onProgress = null);
 }

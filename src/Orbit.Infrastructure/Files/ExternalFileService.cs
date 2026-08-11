@@ -130,7 +130,26 @@ public sealed class ExternalFileService : IExternalFileCapability
         try
         {
             var full = PathSafety.NormalizeFullPath(path);
-            if (Directory.Exists(full))
+            FileAttributes attrs;
+            try
+            {
+                attrs = File.GetAttributes(full);
+            }
+            catch (Exception ex) when (IsCloudOrIoSoftFailure(ex))
+            {
+                return new ExternalFileStat
+                {
+                    FullPath = full,
+                    FileName = Path.GetFileName(full),
+                    Extension = Path.GetExtension(full).TrimStart('.').ToLowerInvariant(),
+                    SizeBytes = 0,
+                    ModifiedAtUtc = DateTimeOffset.UtcNow,
+                    IsDirectory = false,
+                    Availability = FolderAvailability.OfflinePlaceholder,
+                };
+            }
+
+            if ((attrs & FileAttributes.Directory) != 0)
             {
                 var dir = new DirectoryInfo(full);
                 return new ExternalFileStat
@@ -144,21 +163,22 @@ public sealed class ExternalFileService : IExternalFileCapability
                 };
             }
 
-            if (!File.Exists(full))
-            {
-                return null;
-            }
-
             var info = new FileInfo(full);
+            // FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS (0x400000) — OneDrive online-only; not on all TFMs' FileAttributes enum.
+            const FileAttributes RecallOnDataAccess = (FileAttributes)0x400000;
+            var offline = (attrs & FileAttributes.Offline) != 0
+                || (attrs & RecallOnDataAccess) != 0;
             return new ExternalFileStat
             {
                 FullPath = full,
                 FileName = info.Name,
                 Extension = info.Extension.TrimStart('.').ToLowerInvariant(),
-                SizeBytes = info.Length,
+                SizeBytes = SafeLength(info),
                 ModifiedAtUtc = info.LastWriteTimeUtc,
                 IsDirectory = false,
-                Availability = FolderAvailability.Available,
+                Availability = offline
+                    ? FolderAvailability.OfflinePlaceholder
+                    : FolderAvailability.Available,
             };
         }
         catch (Exception ex) when (IsCloudOrIoSoftFailure(ex))
@@ -173,6 +193,18 @@ public sealed class ExternalFileService : IExternalFileCapability
                 IsDirectory = false,
                 Availability = FolderAvailability.OfflinePlaceholder,
             };
+        }
+    }
+
+    private static long SafeLength(FileInfo info)
+    {
+        try
+        {
+            return info.Length;
+        }
+        catch (Exception ex) when (IsCloudOrIoSoftFailure(ex))
+        {
+            return 0;
         }
     }
 

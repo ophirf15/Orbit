@@ -55,11 +55,11 @@ public static class ProjectFolderEndpoints
             try
             {
                 var folder = folders.SetHome(projectId, body.Path ?? string.Empty);
-                var indexed = index.ReindexFolder(folder.Id);
+                var indexed = index.ReindexFolderDetailed(folder.Id);
                 hub.Publish(new OrbitEvent
                 {
                     Type = "folder.home_set",
-                    Payload = new { folderId = folder.Id, projectId, indexed, rootPath = folder.RootPath },
+                    Payload = new { folderId = folder.Id, projectId, indexed = indexed.TouchedCount, rootPath = folder.RootPath },
                 });
                 return Results.Json(new
                 {
@@ -68,8 +68,9 @@ public static class ProjectFolderEndpoints
                     rootPath = folder.RootPath,
                     availability = folder.Availability,
                     isHome = folder.IsHome,
-                    indexedCount = indexed,
+                    indexedCount = indexed.TouchedCount,
                     orbitSandboxPath = OrbitHomeSandbox.GetSandboxRoot(folder.RootPath),
+                    reindex = ToReindexPayload(indexed),
                     requestId,
                 }, statusCode: StatusCodes.Status201Created);
             }
@@ -120,11 +121,11 @@ public static class ProjectFolderEndpoints
             try
             {
                 var folder = folders.Attach(projectId, body.Path ?? string.Empty);
-                var indexed = index.ReindexFolder(folder.Id);
+                var indexed = index.ReindexFolderDetailed(folder.Id);
                 hub.Publish(new OrbitEvent
                 {
                     Type = "folder.attached",
-                    Payload = new { folderId = folder.Id, projectId, indexed },
+                    Payload = new { folderId = folder.Id, projectId, indexed = indexed.TouchedCount },
                 });
                 return Results.Json(new
                 {
@@ -133,7 +134,8 @@ public static class ProjectFolderEndpoints
                     rootPath = folder.RootPath,
                     availability = folder.Availability,
                     isHome = folder.IsHome,
-                    indexedCount = indexed,
+                    indexedCount = indexed.TouchedCount,
+                    reindex = ToReindexPayload(indexed),
                     requestId,
                 }, statusCode: StatusCodes.Status201Created);
             }
@@ -161,8 +163,23 @@ public static class ProjectFolderEndpoints
                 return Results.Json(ApiErrors.Create(ApiErrorCodes.BadRequest, "Folder was not found.", requestId), statusCode: 404);
             }
 
-            var count = index.ReindexFolder(folderId);
-            return Results.Json(new { folderId, indexedCount = count, requestId });
+            var includeOffline = true;
+            if (http.Request.Query.TryGetValue("includeOfflinePlaceholders", out var raw)
+                && bool.TryParse(raw.ToString(), out var parsed))
+            {
+                includeOffline = parsed;
+            }
+
+            var indexed = index.ReindexFolderDetailed(
+                folderId,
+                new FileReindexOptions { IncludeOfflinePlaceholders = includeOffline });
+            return Results.Json(new
+            {
+                folderId,
+                indexedCount = indexed.TouchedCount,
+                reindex = ToReindexPayload(indexed),
+                requestId,
+            });
         });
 
         app.MapGet(HostEndpoints.FilesSearch, (string? q, string? projectId, FileIndexService index, HttpContext http) =>
@@ -333,6 +350,18 @@ public static class ProjectFolderEndpoints
 
         return app;
     }
+
+    private static object ToReindexPayload(FileReindexResult indexed) => new
+    {
+        indexedCount = indexed.TouchedCount,
+        skippedUnchangedCount = indexed.SkippedUnchangedCount,
+        extractedCount = indexed.ExtractedCount,
+        offlinePlaceholderCount = indexed.OfflinePlaceholderCount,
+        softSkippedDirectoryCount = indexed.SoftSkippedDirectoryCount,
+        softSkippedDirectories = indexed.SoftSkippedDirectories,
+        sampleRelativePaths = indexed.SampleRelativePaths,
+        warning = indexed.Warning,
+    };
 
     private static IResult DenyExternalMutation(HttpContext http)
     {

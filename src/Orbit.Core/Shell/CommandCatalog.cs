@@ -1,6 +1,6 @@
 namespace Orbit.Core.Shell;
 
-public sealed record ShellCommand(string Id, string Title, string Keywords);
+public sealed record ShellCommand(string Id, string Title, string Keywords, string? Payload = null);
 
 /// <summary>
 /// Shell command catalog for the command palette (nav + quick capture).
@@ -15,6 +15,10 @@ public static class CommandCatalog
     public const string People = "nav.people";
     public const string Files = "nav.files";
     public const string Search = "nav.search";
+    /// <summary>Run global search for the typed query (palette payload = query).</summary>
+    public const string SearchRun = "search.run";
+    /// <summary>Open a search hit (palette payload = type|id|projectId).</summary>
+    public const string SearchHit = "search.hit";
     /// <summary>Legacy route id — email context lives on the workbench drawer now.</summary>
     public const string Emails = "nav.emails";
     public const string Settings = "nav.settings";

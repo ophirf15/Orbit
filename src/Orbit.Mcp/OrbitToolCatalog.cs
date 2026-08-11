@@ -22,6 +22,10 @@ public static class OrbitToolCatalog
     public const string CreateTask = "orbit_create_task";
     public const string UpdateTask = "orbit_update_task";
     public const string UpdateProject = "orbit_update_project";
+    public const string MergeProject = "orbit_merge_project";
+    public const string AddProjectAlias = "orbit_add_project_alias";
+    public const string RemoveProjectAlias = "orbit_remove_project_alias";
+    public const string ListProjectAliases = "orbit_list_project_aliases";
     public const string CreateNote = "orbit_create_note";
     public const string ArchiveEntity = "orbit_archive_entity";
     public const string LinkTasks = "orbit_link_tasks";
@@ -63,6 +67,10 @@ public static class OrbitToolCatalog
         CreateTask,
         UpdateTask,
         UpdateProject,
+        MergeProject,
+        AddProjectAlias,
+        RemoveProjectAlias,
+        ListProjectAliases,
         CreateNote,
         ArchiveEntity,
         LinkTasks,

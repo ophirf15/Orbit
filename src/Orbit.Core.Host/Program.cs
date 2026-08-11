@@ -67,6 +67,7 @@ public static class Program
         builder.Services.AddSingleton(database.Factory);
         builder.Services.AddSingleton(new ProjectReadStore(database.Factory));
         builder.Services.AddSingleton(new ProjectWriteStore(database.Factory));
+        builder.Services.AddSingleton(new ProjectMergeStore(database.Factory));
         builder.Services.AddSingleton(new WorkbenchLayoutStore(database.Factory));
         builder.Services.AddSingleton(new WorkbenchReadStore(database.Factory));
         builder.Services.AddSingleton(new ProjectContextReadStore(database.Factory));

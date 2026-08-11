@@ -148,9 +148,12 @@ public sealed class DutyOperatorTests
         var emailPrompt = OperatorPromptBuilder.Build(
             OperatorTriggers.EmailIngested,
             """{"emailId":"e1"}""",
-            emailSnapshotJson: """{"id":"e1","subject":"Hello"}""");
+            emailSnapshotJson: """{"id":"e1","subject":"Hello"}""",
+            emailRelationMemory: ["email-relation: mail NOT related to task t1 — Comcast"]);
         Assert.Contains("Email snapshot", emailPrompt, StringComparison.Ordinal);
         Assert.Contains("Hello", emailPrompt, StringComparison.Ordinal);
+        Assert.Contains("Learned email", emailPrompt, StringComparison.Ordinal);
+        Assert.Contains("NOT related", emailPrompt, StringComparison.Ordinal);
         Assert.DoesNotContain("You are Hermes", emailPrompt, StringComparison.Ordinal);
     }
 
@@ -169,6 +172,39 @@ public sealed class DutyOperatorTests
         Assert.Equal(0, runs.CountRunning());
         Assert.NotNull(runs.LastCompletedUtc());
         Assert.Contains("Do X", runs.ListRecent(1)[0].BriefingSummary);
+    }
+
+    [Fact]
+    public void OperatorRunStore_AbandonStaleRunning_UnblocksConcurrency()
+    {
+        using var temp = new TempDb();
+        var factory = OpenMigrated(temp);
+        var runs = new OperatorRunStore(factory);
+
+        var stuck = runs.Start(OperatorTriggers.CalendarSoon, "{}");
+        Assert.Equal(1, runs.CountRunning());
+
+        // Fresh run must not be abandoned by a 12-minute window.
+        Assert.Equal(0, runs.AbandonStaleRunning(TimeSpan.FromMinutes(12)));
+        Assert.Equal(1, runs.CountRunning());
+
+        // Zero maxAge abandons everything (startup / force-clear).
+        Assert.Equal(1, runs.AbandonStaleRunning(TimeSpan.Zero, reason: "test-abandon-all"));
+        Assert.Equal(0, runs.CountRunning());
+
+        var stuck2 = runs.Start(OperatorTriggers.CalendarSoon, "{}");
+        using (var connection = factory.CreateConnection())
+        using (var cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = "UPDATE operator_runs SET created_at = $t WHERE id = $id;";
+            cmd.Parameters.AddWithValue("$id", stuck2.Id);
+            cmd.Parameters.AddWithValue("$t", DateTime.UtcNow.AddHours(-2).ToString("O"));
+            Assert.Equal(1, cmd.ExecuteNonQuery());
+        }
+
+        Assert.Equal(1, runs.AbandonStaleRunning(TimeSpan.FromMinutes(12), reason: "test-abandon"));
+        Assert.Equal(0, runs.CountRunning());
+        Assert.Equal(OperatorRunStatuses.Failed, runs.Get(stuck2.Id)!.Status);
     }
 
     [Fact]

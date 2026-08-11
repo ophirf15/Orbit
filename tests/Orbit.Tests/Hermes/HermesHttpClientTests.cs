@@ -118,6 +118,24 @@ public sealed class HermesHttpClientTests
     }
 
     [Fact]
+    public void ExtractToolProgress_ReadsHermesPayload()
+    {
+        var delta = HermesHttpClient.ExtractToolProgress(
+            """{"tool":"mcp_orbit_orbit_search","status":"running"}""");
+        Assert.NotNull(delta);
+        Assert.Equal(HermesChatDeltaKind.Progress, delta!.Kind);
+        Assert.Equal("mcp_orbit_orbit_search", delta.ToolName);
+        Assert.Contains("search", delta.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void PrettifyToolName_StripsOrbitPrefixes()
+    {
+        Assert.Equal("get workbench", HermesHttpClient.PrettifyToolName("mcp_orbit_orbit_get_workbench"));
+        Assert.Equal("search", HermesHttpClient.PrettifyToolName("orbit_search"));
+    }
+
+    [Fact]
     public async Task TestConnectionAsync_SucceedsWhenHealthOk()
     {
         var handler = new ScriptedHandler(req =>

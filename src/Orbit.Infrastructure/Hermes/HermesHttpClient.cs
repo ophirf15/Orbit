@@ -233,6 +233,7 @@ public sealed class HermesHttpClient : IHermesClient
                 yield break;
             }
 
+            string? currentEvent = null;
             while (!reader.EndOfStream)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -242,8 +243,20 @@ public sealed class HermesHttpClient : IHermesClient
                     break;
                 }
 
-                if (line.Length == 0 || line[0] == ':')
+                if (line.Length == 0)
                 {
+                    currentEvent = null;
+                    continue;
+                }
+
+                if (line[0] == ':')
+                {
+                    continue;
+                }
+
+                if (line.StartsWith("event:", StringComparison.OrdinalIgnoreCase))
+                {
+                    currentEvent = line["event:".Length..].Trim();
                     continue;
                 }
 
@@ -264,10 +277,46 @@ public sealed class HermesHttpClient : IHermesClient
                     yield break;
                 }
 
+                if (IsToolProgressEvent(currentEvent))
+                {
+                    var progress = ExtractToolProgress(data);
+                    if (progress is not null)
+                    {
+                        yield return progress;
+                    }
+
+                    continue;
+                }
+
+                // Some Hermes builds still inject progress markers into content — surface, don't persist as answer.
                 var piece = ExtractDeltaContent(data);
                 if (!string.IsNullOrEmpty(piece))
                 {
-                    yield return new HermesChatDelta { Kind = HermesChatDeltaKind.Content, Text = piece };
+                    if (LooksLikeInlineToolMarker(piece, out var markerTool))
+                    {
+                        yield return new HermesChatDelta
+                        {
+                            Kind = HermesChatDeltaKind.Progress,
+                            Text = FormatToolProgressLine(markerTool, "running"),
+                            ToolName = markerTool,
+                            Status = "running",
+                        };
+                    }
+                    else
+                    {
+                        yield return new HermesChatDelta { Kind = HermesChatDeltaKind.Content, Text = piece };
+                    }
+                }
+
+                var reasoning = ExtractReasoningDelta(data);
+                if (!string.IsNullOrEmpty(reasoning))
+                {
+                    yield return new HermesChatDelta
+                    {
+                        Kind = HermesChatDeltaKind.Progress,
+                        Text = Truncate(reasoning, 160),
+                        Status = "thinking",
+                    };
                 }
             }
 
@@ -419,24 +468,44 @@ public sealed class HermesHttpClient : IHermesClient
 
     public async Task<HermesOperatorChatResult> CompleteOperatorChatAsync(
         HermesChatRequest request,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Action<HermesChatDelta>? onProgress = null)
     {
         ArgumentNullException.ThrowIfNull(request);
-        var nonStream = new HermesChatRequest
+        // Stream so tool/progress events reach the duty banner while Hermes works.
+        var streamRequest = new HermesChatRequest
         {
             Messages = request.Messages,
             SessionId = request.SessionId,
             SessionKey = request.SessionKey,
             Model = request.Model,
-            Stream = false,
+            Stream = true,
         };
 
         var sb = new StringBuilder();
         string? error = null;
-        await foreach (var delta in StreamChatAsync(nonStream, cancellationToken).ConfigureAwait(false))
+        var sawContent = false;
+        await foreach (var delta in StreamChatAsync(streamRequest, cancellationToken).ConfigureAwait(false))
         {
+            if (delta.Kind == HermesChatDeltaKind.Progress)
+            {
+                onProgress?.Invoke(delta);
+                continue;
+            }
+
             if (delta.Kind == HermesChatDeltaKind.Content && !string.IsNullOrEmpty(delta.Text))
             {
+                if (!sawContent)
+                {
+                    sawContent = true;
+                    onProgress?.Invoke(new HermesChatDelta
+                    {
+                        Kind = HermesChatDeltaKind.Progress,
+                        Text = "Writing the briefing…",
+                        Status = "running",
+                    });
+                }
+
                 sb.Append(delta.Text);
             }
             else if (delta.Kind == HermesChatDeltaKind.Error)
@@ -530,6 +599,197 @@ public sealed class HermesHttpClient : IHermesClient
         }
 
         return null;
+    }
+
+    public static string? ExtractReasoningDelta(string dataJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(dataJson);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("choices", out var choices) || choices.GetArrayLength() == 0)
+            {
+                return null;
+            }
+
+            var choice = choices[0];
+            if (!choice.TryGetProperty("delta", out var delta))
+            {
+                return null;
+            }
+
+            foreach (var name in new[] { "reasoning_content", "reasoning", "thinking" })
+            {
+                if (delta.TryGetProperty(name, out var prop) && prop.ValueKind == JsonValueKind.String)
+                {
+                    var value = prop.GetString();
+                    if (!string.IsNullOrWhiteSpace(value))
+                    {
+                        return value.Trim();
+                    }
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        return null;
+    }
+
+    public static HermesChatDelta? ExtractToolProgress(string dataJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(dataJson);
+            var root = doc.RootElement;
+            var tool = TryReadFlexibleString(root, "tool")
+                       ?? TryReadFlexibleString(root, "name")
+                       ?? TryReadFlexibleString(root, "toolName")
+                       ?? TryReadFlexibleString(root, "tool_name");
+            var status = TryReadFlexibleString(root, "status") ?? "running";
+            var message = TryReadFlexibleString(root, "message")
+                          ?? TryReadFlexibleString(root, "text")
+                          ?? TryReadFlexibleString(root, "detail");
+
+            // Nested payload wrappers
+            if (tool is null && root.TryGetProperty("payload", out var payload) && payload.ValueKind == JsonValueKind.Object)
+            {
+                tool = TryReadFlexibleString(payload, "tool")
+                       ?? TryReadFlexibleString(payload, "name");
+                status = TryReadFlexibleString(payload, "status") ?? status;
+                message = TryReadFlexibleString(payload, "message") ?? message;
+            }
+
+            if (string.IsNullOrWhiteSpace(tool) && string.IsNullOrWhiteSpace(message))
+            {
+                // Plain string progress body
+                if (root.ValueKind == JsonValueKind.String)
+                {
+                    message = root.GetString();
+                }
+                else
+                {
+                    return null;
+                }
+            }
+
+            var line = !string.IsNullOrWhiteSpace(message)
+                ? message!.Trim()
+                : FormatToolProgressLine(tool!, status);
+
+            return new HermesChatDelta
+            {
+                Kind = HermesChatDeltaKind.Progress,
+                Text = line,
+                ToolName = tool,
+                Status = status,
+            };
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    public static string FormatToolProgressLine(string toolName, string? status)
+    {
+        var pretty = PrettifyToolName(toolName);
+        var st = (status ?? "running").Trim().ToLowerInvariant();
+        return st switch
+        {
+            "completed" or "done" or "ok" or "success" => $"Finished {pretty}",
+            "failed" or "error" => $"Failed on {pretty}",
+            _ => $"Using {pretty}…",
+        };
+    }
+
+    public static string PrettifyToolName(string toolName)
+    {
+        var name = toolName.Trim();
+        while (true)
+        {
+            if (name.StartsWith("mcp_orbit_", StringComparison.OrdinalIgnoreCase))
+            {
+                name = name["mcp_orbit_".Length..];
+                continue;
+            }
+
+            if (name.StartsWith("orbit_", StringComparison.OrdinalIgnoreCase))
+            {
+                name = name["orbit_".Length..];
+                continue;
+            }
+
+            break;
+        }
+
+        name = name.Replace('_', ' ').Trim();
+        return string.IsNullOrWhiteSpace(name) ? "a tool" : name;
+    }
+
+    private static bool IsToolProgressEvent(string? eventName) =>
+        !string.IsNullOrWhiteSpace(eventName)
+        && (eventName.Equals("hermes.tool.progress", StringComparison.OrdinalIgnoreCase)
+            || eventName.Equals("tool.progress", StringComparison.OrdinalIgnoreCase)
+            || eventName.Equals("tool.started", StringComparison.OrdinalIgnoreCase)
+            || eventName.Equals("tool.completed", StringComparison.OrdinalIgnoreCase)
+            || eventName.Contains("tool", StringComparison.OrdinalIgnoreCase)
+               && eventName.Contains("progress", StringComparison.OrdinalIgnoreCase));
+
+    private static bool LooksLikeInlineToolMarker(string piece, out string toolName)
+    {
+        toolName = string.Empty;
+        var trimmed = piece.Trim();
+        // Legacy markers like "⏰ web_search" or "`🔍 orbit_search`"
+        if (trimmed.Length < 3 || trimmed.Length > 80)
+        {
+            return false;
+        }
+
+        var cleaned = trimmed.Trim('`', '*', ' ', '\t');
+        foreach (var prefix in new[] { "⏰", "🔍", "🛠", "⚙️", "🔧" })
+        {
+            if (cleaned.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                cleaned = cleaned[prefix.Length..].Trim();
+                break;
+            }
+        }
+
+        if (cleaned.Contains(' ') || cleaned.Contains('\n'))
+        {
+            return false;
+        }
+
+        if (!cleaned.Contains('_', StringComparison.Ordinal)
+            && !cleaned.Contains("orbit", StringComparison.OrdinalIgnoreCase)
+            && !cleaned.Contains("search", StringComparison.OrdinalIgnoreCase)
+            && !cleaned.Contains("skill", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        toolName = cleaned;
+        return true;
+    }
+
+    private static string? TryReadFlexibleString(JsonElement root, string name)
+    {
+        if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty(name, out var prop))
+        {
+            return null;
+        }
+
+        return prop.ValueKind switch
+        {
+            JsonValueKind.String => prop.GetString(),
+            JsonValueKind.Number => prop.ToString(),
+            JsonValueKind.True => "true",
+            JsonValueKind.False => "false",
+            _ => null,
+        };
     }
 
     private static string? ExtractNonStreamContent(string json)

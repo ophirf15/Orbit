@@ -1,6 +1,7 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Navigation;
 using Orbit_App.Services;
 using Windows.System;
 
@@ -11,6 +12,16 @@ public sealed partial class SearchPage : Page
     public SearchPage()
     {
         InitializeComponent();
+    }
+
+    protected override void OnNavigatedTo(NavigationEventArgs e)
+    {
+        base.OnNavigatedTo(e);
+        if (e.Parameter is string query && !string.IsNullOrWhiteSpace(query))
+        {
+            QueryBox.Text = query;
+            _ = RunSearchAsync();
+        }
     }
 
     private async void Search_Click(object sender, RoutedEventArgs e) => await RunSearchAsync();

@@ -16,7 +16,7 @@ public sealed class ProjectContextReadStore
         {
             projectCmd.CommandText =
                 """
-                SELECT id, name, summary
+                SELECT id, name, summary, code, dossier_json
                 FROM projects
                 WHERE id = $id AND archived_at IS NULL
                 LIMIT 1;
@@ -31,6 +31,8 @@ public sealed class ProjectContextReadStore
             var id = reader.GetString(0);
             var name = reader.GetString(1);
             var summary = reader.IsDBNull(2) ? null : reader.GetString(2);
+            var code = reader.IsDBNull(3) ? null : reader.GetString(3);
+            var dossier = ProjectDossier.Parse(reader.IsDBNull(4) ? null : reader.GetString(4));
             reader.Close();
 
             return new ProjectContextRecord
@@ -38,6 +40,10 @@ public sealed class ProjectContextReadStore
                 Id = id,
                 Name = name,
                 Summary = summary,
+                Code = code,
+                Dossier = dossier.IsStructurallyEmpty ? null : dossier,
+                DossierEmpty = dossier.IsStructurallyEmpty,
+                Aliases = LoadAliases(connection, projectId),
                 Tasks = LoadTasks(connection, projectId),
                 CompletedTasks = LoadCompletedTasks(connection, projectId),
                 Notes = LoadNotes(connection, projectId),
@@ -57,7 +63,8 @@ public sealed class ProjectContextReadStore
         using var cmd = connection.CreateCommand();
         cmd.CommandText =
             """
-            SELECT id, title, status, next_action, body, project_id, due_at, priority, urgency
+            SELECT id, title, status, next_action, body, project_id, due_at, priority, urgency,
+                   source_kind, source_confidence, source_match_reason
             FROM tasks
             WHERE id = $id AND archived_at IS NULL
             LIMIT 1;
@@ -80,6 +87,9 @@ public sealed class ProjectContextReadStore
             DueAt = reader.IsDBNull(6) ? null : reader.GetString(6),
             Priority = reader.IsDBNull(7) ? null : reader.GetInt32(7),
             Urgency = reader.IsDBNull(8) ? null : reader.GetInt32(8),
+            SourceKind = reader.IsDBNull(9) ? null : reader.GetString(9),
+            SourceConfidence = reader.IsDBNull(10) ? null : reader.GetDouble(10),
+            SourceMatchReason = reader.IsDBNull(11) ? null : reader.GetString(11),
         };
     }
 
@@ -116,6 +126,31 @@ public sealed class ProjectContextReadStore
             SuggestionId = reader.IsDBNull(3) ? null : reader.GetString(3),
             SuggestionSummary = reader.IsDBNull(4) ? null : reader.GetString(4),
         };
+    }
+
+    private static IReadOnlyList<ProjectAliasItem> LoadAliases(SqliteConnection connection, string projectId)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            """
+            SELECT id, alias
+            FROM project_aliases
+            WHERE project_id = $p
+            ORDER BY alias COLLATE NOCASE;
+            """;
+        cmd.Parameters.AddWithValue("$p", projectId);
+        var list = new List<ProjectAliasItem>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            list.Add(new ProjectAliasItem
+            {
+                Id = reader.GetString(0),
+                Alias = reader.GetString(1),
+            });
+        }
+
+        return list;
     }
 
     private static IReadOnlyList<CellLineRecord> LoadTasks(SqliteConnection connection, string projectId)

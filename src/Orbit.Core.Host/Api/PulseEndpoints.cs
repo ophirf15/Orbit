@@ -3,6 +3,8 @@ using Orbit.Core.Host;
 using Orbit.Core.Host.Auth;
 using Orbit.Core.Host.Events;
 using Orbit.Core.Operator;
+using Orbit.Infrastructure.Calendar;
+using Orbit.Infrastructure.Changes;
 using Orbit.Infrastructure.Data;
 using Orbit.Infrastructure.Operator;
 using Orbit.Infrastructure.Pulse;
@@ -33,12 +35,19 @@ public static class PulseEndpoints
         return app;
     }
 
-    private static IResult GetPulse(PulseReadStore pulse, OperatorRunStore runs, HttpContext http)
+    private static IResult GetPulse(
+        PulseReadStore pulse,
+        OperatorRunStore runs,
+        CalendarReadStore calendar,
+        ChangeLogStore changes,
+        HttpContext http)
     {
         var requestId = ApiKeyMiddleware.GetRequestId(http);
+        var view = pulse.GetPulse();
+        var briefing = BuildBriefing(view, pulse, calendar, changes);
         return Results.Json(new
         {
-            pulse = MapPulse(pulse.GetPulse(), runs.ListRecent(1).FirstOrDefault()),
+            pulse = MapPulse(view, runs.ListRecent(1).FirstOrDefault(), briefing),
             requestId,
         });
     }
@@ -46,6 +55,8 @@ public static class PulseEndpoints
     private static IResult RefreshPulse(
         PulseReadStore pulse,
         OperatorRunStore runs,
+        CalendarReadStore calendar,
+        ChangeLogStore changes,
         OperatorWakeService? wake,
         EventHub? hub,
         HttpContext http)
@@ -62,9 +73,11 @@ public static class PulseEndpoints
             hub.Publish(new OrbitEvent { Type = "pulse.refresh", Payload = new { source = "host" } });
         }
 
+        var view = pulse.GetPulse();
+        var briefing = BuildBriefing(view, pulse, calendar, changes);
         return Results.Json(new
         {
-            pulse = MapPulse(pulse.GetPulse(), runs.ListRecent(1).FirstOrDefault()),
+            pulse = MapPulse(view, runs.ListRecent(1).FirstOrDefault(), briefing),
             refreshQueued = wake is not null || hub is not null,
             requestId,
         });
@@ -181,7 +194,7 @@ public static class PulseEndpoints
         });
     }
 
-    private static object MapPulse(PulseView pulse, OperatorRunRecord? lastRun) => new
+    private static object MapPulse(PulseView pulse, OperatorRunRecord? lastRun, PulseBriefingStrip? briefing = null) => new
     {
         dayBrief = pulse.DayBrief,
         hermesHint = pulse.HermesHint,
@@ -197,7 +210,65 @@ public static class PulseEndpoints
             nextAction = c.NextAction,
             bodyExcerpt = c.BodyExcerpt,
             updatedAt = c.UpdatedAt,
+            sourceKind = c.SourceKind,
+            sourceConfidence = c.SourceConfidence,
+            sourceMatchReason = c.SourceMatchReason,
         }),
+        unmatchedMail = pulse.UnmatchedMail.Select(m => new
+        {
+            suggestionId = m.SuggestionId,
+            summary = m.Summary,
+            emailId = m.EmailId,
+            subject = m.Subject,
+            snippet = m.Snippet,
+            confidence = m.Confidence,
+            createdAt = m.CreatedAt,
+        }),
+        briefing = briefing is null
+            ? null
+            : new
+            {
+                upcomingMeetings = briefing.UpcomingMeetings.Select(m => new
+                {
+                    id = m.Id,
+                    title = m.Title,
+                    startsAt = m.StartsAt,
+                    sourceName = m.SourceName,
+                }),
+                topActions = briefing.TopActions.Select(a => new
+                {
+                    taskId = a.TaskId,
+                    projectId = a.ProjectId,
+                    projectName = a.ProjectName,
+                    title = a.Title,
+                    nextAction = a.NextAction,
+                }),
+                waitingOn = briefing.WaitingOn.Select(w => new
+                {
+                    taskId = w.TaskId,
+                    projectName = w.ProjectName,
+                    title = w.Title,
+                    status = w.Status,
+                    updatedAt = w.UpdatedAt,
+                    ageHours = w.AgeHours,
+                }),
+                alerts = briefing.Alerts.Select(a => new
+                {
+                    kind = a.Kind,
+                    message = a.Message,
+                    projectId = a.ProjectId,
+                }),
+                recentChanges = briefing.RecentChanges.Select(c => new
+                {
+                    revision = c.Revision,
+                    entityType = c.EntityType,
+                    entityId = c.EntityId,
+                    changeKind = c.ChangeKind,
+                    sourceEvent = c.SourceEvent,
+                    createdAt = c.CreatedAt,
+                }),
+                changeCursor = briefing.ChangeCursor,
+            },
         lastOperatorRun = lastRun is null
             ? null
             : new
@@ -212,6 +283,155 @@ public static class PulseEndpoints
             },
     };
 
+    private static PulseBriefingStrip BuildBriefing(
+        PulseView pulse,
+        PulseReadStore store,
+        CalendarReadStore calendar,
+        ChangeLogStore changes)
+    {
+        var meetings = calendar.GetUpcomingContext(TimeSpan.FromDays(7), limit: 12)
+            .Select(m => new PulseBriefingMeetingRecord
+            {
+                Id = m.Id,
+                Title = m.Title,
+                StartsAt = m.StartsAt,
+                SourceName = m.CalendarName ?? m.MailboxName ?? m.SourceName,
+            })
+            .ToList();
+
+        var topActions = pulse.Concerns
+            .Where(c => !string.IsNullOrWhiteSpace(c.NextAction))
+            .Take(3)
+            .Select(c => new PulseBriefingActionRecord
+            {
+                TaskId = c.TaskId,
+                ProjectId = c.ProjectId,
+                ProjectName = c.ProjectName,
+                Title = c.Title,
+                NextAction = c.NextAction,
+            })
+            .ToList();
+
+        var now = DateTimeOffset.UtcNow;
+        var waiting = pulse.Concerns
+            .Where(c => string.Equals(c.Status, "waiting", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(c.Status, "blocked", StringComparison.OrdinalIgnoreCase))
+            .Select(c =>
+            {
+                var ageHours = 0;
+                if (DateTimeOffset.TryParse(c.UpdatedAt, out var updated))
+                {
+                    ageHours = Math.Max(0, (int)(now - updated).TotalHours);
+                }
+
+                return new PulseBriefingWaitingRecord
+                {
+                    TaskId = c.TaskId,
+                    ProjectName = c.ProjectName,
+                    Title = c.Title,
+                    Status = c.Status,
+                    UpdatedAt = c.UpdatedAt,
+                    AgeHours = ageHours,
+                };
+            })
+            .OrderByDescending(w => w.AgeHours)
+            .Take(8)
+            .ToList();
+
+        var alerts = new List<PulseBriefingAlertRecord>();
+        var projects = store.ListOrbitProjects();
+        foreach (var p in projects.Where(p => p.DossierEmpty).Take(8))
+        {
+            alerts.Add(new PulseBriefingAlertRecord
+            {
+                Kind = "empty_dossier",
+                Message = $"{p.Name}: dossier is empty",
+                ProjectId = p.Id,
+            });
+        }
+
+        foreach (var p in projects.Where(p => p.MissingNextAction).Take(8))
+        {
+            alerts.Add(new PulseBriefingAlertRecord
+            {
+                Kind = "missing_next_action",
+                Message = $"{p.Name}: open concern missing next action",
+                ProjectId = p.Id,
+            });
+        }
+
+        foreach (var c in pulse.Concerns.Where(c => string.IsNullOrWhiteSpace(c.BodyExcerpt)).Take(5))
+        {
+            alerts.Add(new PulseBriefingAlertRecord
+            {
+                Kind = "missing_brief",
+                Message = $"{c.ProjectName}: “{c.Title}” needs a living brief",
+                ProjectId = c.ProjectId,
+            });
+        }
+
+        if (pulse.UnmatchedMail.Count > 0)
+        {
+            alerts.Add(new PulseBriefingAlertRecord
+            {
+                Kind = "unmatched_mail",
+                Message = $"{pulse.UnmatchedMail.Count} unmatched mail item(s) need a project",
+            });
+        }
+
+        // Cheap near-dupe alert: projects whose normalized names collide as substrings.
+        var active = store.ListActiveProjects();
+        for (var i = 0; i < active.Count; i++)
+        {
+            for (var j = i + 1; j < active.Count; j++)
+            {
+                var a = ProjectIdentityMatcher.Normalize(active[i].Name);
+                var b = ProjectIdentityMatcher.Normalize(active[j].Name);
+                if (a.Length < 4 || b.Length < 4)
+                {
+                    continue;
+                }
+
+                if (a == b || a.Contains(b, StringComparison.Ordinal) || b.Contains(a, StringComparison.Ordinal))
+                {
+                    alerts.Add(new PulseBriefingAlertRecord
+                    {
+                        Kind = "ambiguous_project",
+                        Message = $"Possible duplicate projects: “{active[i].Name}” and “{active[j].Name}”",
+                        ProjectId = active[i].Id,
+                    });
+                }
+            }
+        }
+
+        var cursor = changes.CurrentCursor();
+        var since = Math.Max(0, cursor - 25);
+        var (events, _) = changes.ListSince(since, limit: 20);
+        var recent = events
+            .OrderByDescending(e => e.Revision)
+            .Take(12)
+            .Select(e => new PulseBriefingChangeRecord
+            {
+                Revision = e.Revision,
+                EntityType = e.EntityType,
+                EntityId = e.EntityId,
+                ChangeKind = e.ChangeKind,
+                SourceEvent = e.SourceEvent,
+                CreatedAt = e.CreatedAt,
+            })
+            .ToList();
+
+        return new PulseBriefingStrip
+        {
+            UpcomingMeetings = meetings,
+            TopActions = topActions,
+            WaitingOn = waiting,
+            Alerts = alerts.Take(20).ToList(),
+            RecentChanges = recent,
+            ChangeCursor = cursor,
+        };
+    }
+
     private static object MapOrbitProject(OrbitProjectRecord project) => new
     {
         id = project.Id,
@@ -221,6 +441,8 @@ public static class PulseEndpoints
         inOrbit = project.InOrbit,
         openConcernCount = project.OpenConcernCount,
         topNextAction = project.TopNextAction,
+        dossierEmpty = project.DossierEmpty,
+        missingNextAction = project.MissingNextAction,
     };
 
     private static object MapIgnitionProject(OrbitIgnitionProjectResult project) => new

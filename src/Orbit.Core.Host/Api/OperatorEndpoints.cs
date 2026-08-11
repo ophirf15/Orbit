@@ -16,6 +16,7 @@ public static class OperatorEndpoints
     public static IEndpointRouteBuilder MapOperatorEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapGet(HostEndpoints.OperatorRuns, ListRuns);
+        app.MapPost(HostEndpoints.OperatorRunsClearStuck, ClearStuckRuns);
         app.MapPost(HostEndpoints.OperatorWake, Wake);
         app.MapGet(HostEndpoints.OperatorRules, ListRules);
         app.MapPost(HostEndpoints.OperatorRules, CreateRule);
@@ -48,6 +49,14 @@ public static class OperatorEndpoints
             runs = runs.ListRecent(30).Select(MapRun),
             requestId,
         });
+    }
+
+    private static IResult ClearStuckRuns(OperatorRunStore runs, HttpContext http)
+    {
+        var requestId = ApiKeyMiddleware.GetRequestId(http);
+        var abandoned = runs.AbandonAllRunning(
+            "Cleared stuck operator runs (manual / banner recovery).");
+        return Results.Json(new { ok = true, abandoned, requestId });
     }
 
     private static IResult Wake(OperatorWakeRequest? body, OperatorWakeService wake, HttpContext http)
@@ -234,15 +243,24 @@ public static class OperatorEndpoints
             notedAt = DateTimeOffset.UtcNow.ToString("O"),
         });
 
-        // Prefer completing the newest running email.ingested run (opened at webhook ingest),
-        // even if Hermes omitted triggerKind or used a cron label.
+        // Complete a matching running run when Hermes is finishing that trigger.
+        // Do NOT let pulse.refresh / duty.scan steal an open email.ingested shell —
+        // that left mail pushes "still organizing" while cron briefings looked fine.
         var recent = runs.ListRecent(30);
-        var running = recent.FirstOrDefault(r =>
+        OperatorRunRecord? running = null;
+        if (trigger.Contains("email", StringComparison.OrdinalIgnoreCase))
+        {
+            running = recent.FirstOrDefault(r =>
                 string.Equals(r.Status, OperatorRunStatuses.Running, StringComparison.OrdinalIgnoreCase)
-                && r.TriggerKind.Contains("email", StringComparison.OrdinalIgnoreCase))
-            ?? recent.FirstOrDefault(r =>
+                && r.TriggerKind.Contains("email", StringComparison.OrdinalIgnoreCase));
+        }
+        else
+        {
+            running = recent.FirstOrDefault(r =>
                 string.Equals(r.Status, OperatorRunStatuses.Running, StringComparison.OrdinalIgnoreCase)
                 && string.Equals(r.TriggerKind, trigger, StringComparison.OrdinalIgnoreCase));
+        }
+
         var run = running ?? runs.Start(trigger, payloadJson);
         runs.Complete(run.Id, OperatorRunStatuses.Completed, briefingSummary: briefing);
 

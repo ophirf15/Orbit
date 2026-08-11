@@ -13,6 +13,7 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
@@ -141,19 +142,122 @@
                 </StackPanel>
             </Border>
 
-            <Grid Grid.Row="3" RowSpacing="8">
+            <Border
+                Grid.Row="3"
+                Padding="14,12"
+                Background="{ThemeResource OrbitDetailSurfaceBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="{StaticResource ControlCornerRadius}">
+                <StackPanel Spacing="8">
+                    <TextBlock
+                        FontWeight="SemiBold"
+                        Opacity="0.8"
+                        Text="Briefing" />
+                    <TextBlock x:Name="BriefingMeetingsHeader" FontWeight="SemiBold" Opacity="0.7" Style="{StaticResource CaptionTextBlockStyle}" Text="Calendar · next 7 days" Visibility="Collapsed" />
+                    <ItemsControl x:Name="BriefingMeetingsList" Visibility="Collapsed">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Opacity="0.85" Text="{Binding}" TextWrapping="Wrap" Margin="0,0,0,2" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock x:Name="BriefingActionsHeader" FontWeight="SemiBold" Opacity="0.7" Style="{StaticResource CaptionTextBlockStyle}" Text="Top actions" Visibility="Collapsed" />
+                    <ItemsControl x:Name="BriefingActionsList" Visibility="Collapsed">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Opacity="0.85" Text="{Binding}" TextWrapping="Wrap" Margin="0,0,0,2" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock x:Name="BriefingWaitingHeader" FontWeight="SemiBold" Opacity="0.7" Style="{StaticResource CaptionTextBlockStyle}" Text="Waiting on" Visibility="Collapsed" />
+                    <ItemsControl x:Name="BriefingWaitingList" Visibility="Collapsed">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Opacity="0.85" Text="{Binding}" TextWrapping="Wrap" Margin="0,0,0,2" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock x:Name="BriefingAlertsHeader" FontWeight="SemiBold" Opacity="0.7" Style="{StaticResource CaptionTextBlockStyle}" Text="Alerts" Visibility="Collapsed" />
+                    <ItemsControl x:Name="BriefingAlertsList" Visibility="Collapsed">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Opacity="0.85" Text="{Binding}" TextWrapping="Wrap" Margin="0,0,0,2" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock x:Name="BriefingChangesHeader" FontWeight="SemiBold" Opacity="0.7" Style="{StaticResource CaptionTextBlockStyle}" Text="Changes since last check" Visibility="Collapsed" />
+                    <ItemsControl x:Name="BriefingChangesList" Visibility="Collapsed">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Opacity="0.85" Text="{Binding}" TextWrapping="Wrap" Margin="0,0,0,2" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock
+                        x:Name="BriefingEmptyText"
+                        Opacity="0.65"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Text="No briefing signals yet — sync calendars and fill project dossiers." />
+                </StackPanel>
+            </Border>
+
+            <Grid Grid.Row="4" RowSpacing="10">
                 <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
+
+                <StackPanel x:Name="UnmatchedMailPanel" Spacing="6" Visibility="Collapsed">
+                    <TextBlock
+                        x:Name="UnmatchedMailHeader"
+                        FontWeight="SemiBold"
+                        Opacity="0.85"
+                        Text="Unmatched mail" />
+                    <ListView
+                        x:Name="UnmatchedMailList"
+                        MaxHeight="160"
+                        AutomationProperties.Name="Unmatched mail"
+                        IsItemClickEnabled="True"
+                        ItemClick="UnmatchedMailList_ItemClick"
+                        SelectionMode="None">
+                        <ListView.ItemTemplate>
+                            <DataTemplate>
+                                <Border
+                                    Margin="0,0,0,6"
+                                    Padding="12,10"
+                                    Background="{ThemeResource OrbitFieldFillBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="{StaticResource ControlCornerRadius}">
+                                    <StackPanel Spacing="2">
+                                        <TextBlock
+                                            Style="{StaticResource BodyStrongTextBlockStyle}"
+                                            Text="{Binding Summary}"
+                                            TextWrapping="Wrap" />
+                                        <TextBlock
+                                            MaxLines="3"
+                                            Opacity="0.75"
+                                            Style="{StaticResource CaptionTextBlockStyle}"
+                                            Text="{Binding CaptionLine}"
+                                            TextWrapping="WrapWholeWords" />
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
+                </StackPanel>
+
                 <TextBlock
                     x:Name="ConcernsHeader"
+                    Grid.Row="1"
                     FontWeight="SemiBold"
                     Opacity="0.85"
                     Text="Needs you now" />
                 <ListView
                     x:Name="ConcernsList"
-                    Grid.Row="1"
+                    Grid.Row="2"
                     AutomationProperties.Name="Concerns"
                     IsItemClickEnabled="True"
                     ItemClick="ConcernsList_ItemClick"
@@ -187,6 +291,11 @@
                                             Style="{StaticResource CaptionTextBlockStyle}"
                                             Text="{Binding SubtitleLine}" />
                                         <TextBlock
+                                            Opacity="0.6"
+                                            Style="{StaticResource CaptionTextBlockStyle}"
+                                            Text="{Binding SourceLine}"
+                                            TextWrapping="Wrap" />
+                                        <TextBlock
                                             MaxLines="2"
                                             Opacity="0.65"
                                             Style="{StaticResource CaptionTextBlockStyle}"
@@ -203,7 +312,7 @@
 
             <TextBlock
                 x:Name="StatusText"
-                Grid.Row="4"
+                Grid.Row="5"
                 Opacity="0.7"
                 Style="{StaticResource CaptionTextBlockStyle}"
                 Text="" />

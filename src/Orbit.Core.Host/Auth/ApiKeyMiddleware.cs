@@ -39,6 +39,13 @@ public sealed class ApiKeyMiddleware
         context.Items["RequestId"] = requestId;
         context.Items["AuditCorrelationId"] = auditId;
 
+        // CORS preflight must pass without a bearer (Outlook web add-in on https://localhost).
+        if (HttpMethods.IsOptions(context.Request.Method))
+        {
+            await _next(context);
+            return;
+        }
+
         if (_requireKey && !HostEndpoints.IsAnonymousPath(context.Request.Path.Value))
         {
             var auth = context.Request.Headers.Authorization.ToString();

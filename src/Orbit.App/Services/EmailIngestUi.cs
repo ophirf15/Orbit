@@ -32,7 +32,7 @@ public static class EmailIngestUi
         }
 
         using var client = new CoreHostClient(settings, store);
-        var result = await client.IngestEmailAsync(dest, projectIds, ct);
+        var result = await client.IngestEmailAsync(dest, projectIds, memo: null, ct);
         if (result is null)
         {
             return (null, client.LastEmailIngestError ?? "Email ingest failed. Is Core Host running?");

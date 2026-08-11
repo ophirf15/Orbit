@@ -54,6 +54,7 @@ public sealed class HermesChatRequest
 public enum HermesChatDeltaKind
 {
     Content,
+    Progress,
     Done,
     Error,
 }
@@ -63,6 +64,12 @@ public sealed class HermesChatDelta
     public required HermesChatDeltaKind Kind { get; init; }
 
     public string? Text { get; init; }
+
+    /// <summary>Tool / skill name when <see cref="Kind"/> is Progress.</summary>
+    public string? ToolName { get; init; }
+
+    /// <summary>running | completed | thinking, when known.</summary>
+    public string? Status { get; init; }
 }
 
 public sealed class HermesConnectionTestResult

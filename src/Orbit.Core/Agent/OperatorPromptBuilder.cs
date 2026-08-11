@@ -11,8 +11,13 @@ public static class OperatorPromptBuilder
 {
     private const int MaxPayloadChars = 4000;
     private const int MaxEmailSnapshotChars = 6000;
+    private const int MaxRelationMemoryChars = 1500;
 
-    public static string Build(string triggerKind, string? triggerPayloadJson, string? emailSnapshotJson = null)
+    public static string Build(
+        string triggerKind,
+        string? triggerPayloadJson,
+        string? emailSnapshotJson = null,
+        IReadOnlyList<string>? emailRelationMemory = null)
     {
         var sb = new StringBuilder();
         sb.AppendLine("Orbit Core wake (slim). Identity and standing rules live in SOUL.md / Hermes memory.");
@@ -35,10 +40,24 @@ public static class OperatorPromptBuilder
             sb.AppendLine(Truncate(emailSnapshotJson.Trim(), MaxEmailSnapshotChars));
         }
 
+        if (emailRelationMemory is { Count: > 0 })
+        {
+            sb.AppendLine();
+            sb.AppendLine("Learned email↔task relations (operator Accept/Reject):");
+            var joined = string.Join(
+                "\n",
+                emailRelationMemory
+                    .Where(l => !string.IsNullOrWhiteSpace(l))
+                    .Take(12)
+                    .Select(l => "- " + l.Trim()));
+            sb.AppendLine(Truncate(joined, MaxRelationMemoryChars));
+        }
+
         if (string.Equals(triggerKind, OperatorTriggers.EmailIngested, StringComparison.Ordinal))
         {
             sb.AppendLine();
             sb.AppendLine("Skill hint: attach to existing task when possible; set nextAction + body; one question if ambiguous.");
+            sb.AppendLine("Do not propose weak token merges across unrelated vendor topics in the same property.");
         }
 
         return sb.ToString().TrimEnd();

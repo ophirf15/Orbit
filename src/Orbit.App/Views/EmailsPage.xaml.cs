@@ -209,21 +209,39 @@ public sealed partial class EmailsPage : Page
         StatusText.Text = "Pushing Outlook selection…";
         try
         {
+            if (App.MainWindow?.Content is FrameworkElement root
+                && FindShell(root) is { } shell)
+            {
+                await shell.PushOutlookSelectionAsync(promptForMemo: true);
+                StatusText.Text = "Sent via Orbit shell.";
+                return;
+            }
+
+            if (XamlRoot is null)
+            {
+                StatusText.Text = "Orbit UI is not ready.";
+                return;
+            }
+
+            var prompt = await OutlookPushPrompt.ShowAsync(XamlRoot);
+            if (prompt is null)
+            {
+                StatusText.Text = "Cancelled.";
+                return;
+            }
+
+            var projectIds = !string.IsNullOrWhiteSpace(prompt.ProjectId)
+                ? (IReadOnlyList<string>)[prompt.ProjectId]
+                : SelectedProjectIds();
             var result = await OutlookPushCoordinator.PushSelectedAsync(
                 App.Settings,
                 App.SettingsStore,
-                SelectedProjectIds());
+                projectIds,
+                prompt.Memo);
             StatusText.Text = result.StatusLine;
             SummaryText.Text = result.Detail;
             _lastEmailId = result.LastEmailId;
             OpenInOutlookButton.IsEnabled = !string.IsNullOrWhiteSpace(_lastEmailId);
-
-            if (result.Ok
-                && App.MainWindow?.Content is FrameworkElement root
-                && FindShell(root) is { } shell)
-            {
-                shell.ShowDutyBanner(result.StatusLine, Truncate(result.Detail, 400), InfoBarSeverity.Success);
-            }
         }
         catch (Exception ex)
         {

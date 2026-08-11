@@ -148,7 +148,11 @@ public sealed class EmailArtifactStore
         tx.Commit();
     }
 
-    public void LinkToProject(string emailId, string projectId)
+    public void LinkToProject(
+        string emailId,
+        string projectId,
+        double? confidence = null,
+        string? matchReason = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(emailId);
         ArgumentException.ThrowIfNullOrWhiteSpace(projectId);
@@ -156,18 +160,23 @@ public sealed class EmailArtifactStore
         EnsureProjectExists(projectId);
 
         var now = DateTime.UtcNow.ToString("O");
+        var reason = string.IsNullOrWhiteSpace(matchReason) ? null : matchReason.Trim();
         using var connection = _factory.CreateConnection();
         using var cmd = connection.CreateCommand();
         cmd.CommandText =
             """
-            INSERT INTO email_project_links (id, email_artifact_id, project_id, created_at)
-            VALUES ($id, $email, $project, $t)
-            ON CONFLICT(email_artifact_id, project_id) DO NOTHING;
+            INSERT INTO email_project_links (id, email_artifact_id, project_id, created_at, confidence, match_reason)
+            VALUES ($id, $email, $project, $t, $confidence, $reason)
+            ON CONFLICT(email_artifact_id, project_id) DO UPDATE SET
+              confidence = COALESCE(excluded.confidence, email_project_links.confidence),
+              match_reason = COALESCE(excluded.match_reason, email_project_links.match_reason);
             """;
         cmd.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("D"));
         cmd.Parameters.AddWithValue("$email", emailId);
         cmd.Parameters.AddWithValue("$project", projectId);
         cmd.Parameters.AddWithValue("$t", now);
+        cmd.Parameters.AddWithValue("$confidence", (object?)confidence ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$reason", (object?)reason ?? DBNull.Value);
         cmd.ExecuteNonQuery();
     }
 

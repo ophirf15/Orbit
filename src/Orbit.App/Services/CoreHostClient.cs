@@ -226,6 +226,8 @@ public sealed class CoreHostClient : IDisposable
                 BoardW = c.BoardW ?? 0,
                 BoardH = c.BoardH ?? 0,
                 HasSavedLayout = c.BoardX is not null && c.BoardY is not null && c.BoardW is not null && c.BoardH is not null,
+                DossierEmpty = c.DossierEmpty,
+                MissingNextAction = c.MissingNextAction,
             }).ToList(),
             Limbo = (dto.Limbo ?? []).Select(n => new LimboNoteVm
             {
@@ -320,16 +322,130 @@ public sealed class CoreHostClient : IDisposable
         string projectId,
         string? name = null,
         string? summary = null,
+        string? code = null,
+        bool clearCode = false,
+        object? dossier = null,
         CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(projectId) || (name is null && summary is null))
+        if (string.IsNullOrWhiteSpace(projectId)
+            || (name is null && summary is null && code is null && !clearCode && dossier is null))
         {
             return false;
         }
 
+        var payload = new Dictionary<string, object?>();
+        if (name is not null)
+        {
+            payload["name"] = name;
+        }
+
+        if (summary is not null)
+        {
+            payload["summary"] = summary;
+        }
+
+        if (clearCode)
+        {
+            payload["clearCode"] = true;
+        }
+        else if (code is not null)
+        {
+            payload["code"] = code;
+        }
+
+        if (dossier is not null)
+        {
+            payload["dossier"] = dossier;
+        }
+
         using var response = await _http.PatchAsJsonAsync(
             $"v1/projects/{Uri.EscapeDataString(projectId)}",
-            new { name, summary },
+            payload,
+            ct);
+        return response.IsSuccessStatusCode;
+    }
+
+    public async Task<IReadOnlyList<ProjectAliasVm>> ListProjectAliasesAsync(
+        string projectId,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(projectId))
+        {
+            return [];
+        }
+
+        using var response = await _http.GetAsync(
+            $"v1/projects/{Uri.EscapeDataString(projectId)}/aliases",
+            ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            return [];
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+        if (!doc.RootElement.TryGetProperty("aliases", out var arr) || arr.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        var list = new List<ProjectAliasVm>();
+        foreach (var el in arr.EnumerateArray())
+        {
+            var id = el.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
+            var alias = el.TryGetProperty("alias", out var aliasEl) ? aliasEl.GetString() : null;
+            if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(alias))
+            {
+                continue;
+            }
+
+            list.Add(new ProjectAliasVm { Id = id, Alias = alias });
+        }
+
+        return list;
+    }
+
+    public async Task<ProjectAliasVm?> AddProjectAliasAsync(
+        string projectId,
+        string alias,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(projectId) || string.IsNullOrWhiteSpace(alias))
+        {
+            return null;
+        }
+
+        using var response = await _http.PostAsJsonAsync(
+            $"v1/projects/{Uri.EscapeDataString(projectId)}/aliases",
+            new { alias },
+            ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        var dto = await JsonSerializer.DeserializeAsync<ProjectAliasDto>(stream, JsonOptions, ct);
+        if (dto is null || string.IsNullOrWhiteSpace(dto.Id) || string.IsNullOrWhiteSpace(dto.Alias))
+        {
+            return null;
+        }
+
+        return new ProjectAliasVm { Id = dto.Id, Alias = dto.Alias };
+    }
+
+    public async Task<bool> RemoveProjectAliasAsync(
+        string projectId,
+        string aliasId,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(projectId) || string.IsNullOrWhiteSpace(aliasId))
+        {
+            return false;
+        }
+
+        using var response = await _http.DeleteAsync(
+            $"v1/projects/{Uri.EscapeDataString(projectId)}/aliases/{Uri.EscapeDataString(aliasId)}",
             ct);
         return response.IsSuccessStatusCode;
     }
@@ -429,6 +545,9 @@ public sealed class CoreHostClient : IDisposable
         string? dueAt = null,
         int? priority = null,
         int? urgency = null,
+        string? projectId = null,
+        string? workstreamId = null,
+        bool clearWorkstream = false,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(taskId))
@@ -438,20 +557,66 @@ public sealed class CoreHostClient : IDisposable
 
         using var response = await _http.PostAsJsonAsync(
             "v1/agent/tools/orbit_update_task",
-            BuildUpdateTaskBody(taskId, title, status, nextAction, body, dueAt, priority, urgency),
+            BuildUpdateTaskBody(
+                taskId, title, status, nextAction, body, dueAt, priority, urgency,
+                projectId, workstreamId, clearWorkstream),
             ct);
         return response.IsSuccessStatusCode;
     }
 
+    /// <summary>Moves a task to another project via <c>orbit_update_task</c> (audited).</summary>
+    public async Task<(bool Ok, string? Error)> MoveTaskAsync(
+        string taskId,
+        string projectId,
+        string? workstreamId = null,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(taskId) || string.IsNullOrWhiteSpace(projectId))
+        {
+            return (false, "Task and project are required.");
+        }
+
+        try
+        {
+            using var response = await _http.PostAsJsonAsync(
+                "v1/agent/tools/orbit_update_task",
+                BuildUpdateTaskBody(
+                    taskId,
+                    projectId: projectId,
+                    workstreamId: workstreamId),
+                ct);
+            if (response.IsSuccessStatusCode)
+            {
+                return (true, null);
+            }
+
+            var detail = await response.Content.ReadAsStringAsync(ct);
+            var hint = $"Move failed ({(int)response.StatusCode}).";
+            if (!string.IsNullOrWhiteSpace(detail) && detail.Length < 240)
+            {
+                hint = $"{hint} {detail.Trim()}";
+            }
+
+            return (false, hint);
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
+
     private static Dictionary<string, object?> BuildUpdateTaskBody(
         string taskId,
-        string? title,
-        string? status,
-        string? nextAction,
-        string? body,
-        string? dueAt,
-        int? priority,
-        int? urgency)
+        string? title = null,
+        string? status = null,
+        string? nextAction = null,
+        string? body = null,
+        string? dueAt = null,
+        int? priority = null,
+        int? urgency = null,
+        string? projectId = null,
+        string? workstreamId = null,
+        bool clearWorkstream = false)
     {
         var payload = new Dictionary<string, object?>
         {
@@ -493,6 +658,21 @@ public sealed class CoreHostClient : IDisposable
             payload["urgency"] = urgency;
         }
 
+        if (projectId is not null)
+        {
+            payload["projectId"] = projectId;
+        }
+
+        if (workstreamId is not null)
+        {
+            payload["workstreamId"] = workstreamId;
+        }
+
+        if (clearWorkstream)
+        {
+            payload["clearWorkstream"] = true;
+        }
+
         return payload;
     }
 
@@ -525,6 +705,55 @@ public sealed class CoreHostClient : IDisposable
             new { entityType, entityId, actor = "user" },
             ct);
         return response.IsSuccessStatusCode;
+    }
+
+    public async Task<ProjectMergePreviewVm?> PreviewMergeProjectAsync(
+        string sourceProjectId,
+        string targetProjectId,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(sourceProjectId) || string.IsNullOrWhiteSpace(targetProjectId))
+        {
+            return null;
+        }
+
+        using var response = await _http.PostAsJsonAsync(
+            "v1/projects/merge/preview",
+            new { sourceProjectId, targetProjectId },
+            ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        var dto = await JsonSerializer.DeserializeAsync<MergePreviewEnvelopeDto>(stream, JsonOptions, ct);
+        return dto?.Preview is null ? null : MapMergePreview(dto.Preview);
+    }
+
+    public async Task<ProjectMergeResultVm?> MergeProjectAsync(
+        string sourceProjectId,
+        string targetProjectId,
+        bool force = false,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(sourceProjectId) || string.IsNullOrWhiteSpace(targetProjectId))
+        {
+            return null;
+        }
+
+        using var response = await _http.PostAsJsonAsync(
+            "v1/projects/merge",
+            new { sourceProjectId, targetProjectId, force, actor = "user" },
+            ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        var dto = await JsonSerializer.DeserializeAsync<MergeResultEnvelopeDto>(stream, JsonOptions, ct);
+        return dto?.Merge is null ? null : MapMergeResult(dto.Merge);
     }
 
     public async Task<IReadOnlyList<CustomFieldRowVm>> GetCustomFieldsAsync(
@@ -673,6 +902,36 @@ public sealed class CoreHostClient : IDisposable
         return response.IsSuccessStatusCode;
     }
 
+    /// <summary>Force-fail any operator_runs left in <c>running</c> (Host crash / mid-push restart).</summary>
+    public async Task<int> ClearStuckOperatorRunsAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            using var response = await _http.PostAsJsonAsync(
+                "v1/operator/runs/clear-stuck",
+                new { },
+                ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                return 0;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+            if (doc.RootElement.TryGetProperty("abandoned", out var abandoned)
+                && abandoned.TryGetInt32(out var n))
+            {
+                return n;
+            }
+
+            return 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
     public async Task<OperatorDashboardVm?> GetOperatorDashboardAsync(CancellationToken ct = default)
     {
         try
@@ -697,7 +956,11 @@ public sealed class CoreHostClient : IDisposable
 
             return new OperatorDashboardVm
             {
-                LatestBriefing = runs?.Runs?.FirstOrDefault()?.BriefingSummary,
+                LatestBriefing = runs?.Runs?
+                    .FirstOrDefault(r =>
+                        !string.Equals(r.Status, "running", StringComparison.OrdinalIgnoreCase)
+                        && !string.IsNullOrWhiteSpace(r.BriefingSummary))
+                    ?.BriefingSummary,
                 LatestRunStatus = runs?.Runs?.FirstOrDefault()?.Status,
                 LatestTrigger = runs?.Runs?.FirstOrDefault()?.TriggerKind,
                 LatestRunId = runs?.Runs?.FirstOrDefault()?.Id,
@@ -1009,6 +1272,37 @@ public sealed class CoreHostClient : IDisposable
 
     public async Task<string?> GetCalendarSourcesSummaryAsync(CancellationToken ct = default)
     {
+        var sources = await ListCalendarSourcesAsync(ct);
+        if (sources is null)
+        {
+            return null;
+        }
+
+        if (sources.Count == 0)
+        {
+            return "Calendar sources: (none)";
+        }
+
+        var lines = new List<string> { "Calendar sources:" };
+        foreach (var src in sources)
+        {
+            var identity = string.Join(" / ", new[] { src.MailboxName, src.CalendarName }.Where(x => !string.IsNullOrWhiteSpace(x)));
+            var label = string.IsNullOrWhiteSpace(identity) ? src.Name : $"{src.Name} ({identity})";
+            var included = src.Enabled ? "included" : "excluded";
+            var line = $"- [{src.Provider}] {label} — {included} · {src.LastSyncStatus ?? "unknown"}";
+            if (!string.IsNullOrWhiteSpace(src.LastSyncError))
+            {
+                line += $" ({src.LastSyncError})";
+            }
+
+            lines.Add(line);
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    public async Task<IReadOnlyList<CalendarSourceVm>?> ListCalendarSourcesAsync(CancellationToken ct = default)
+    {
         using var response = await _http.GetAsync("v1/calendar/sources", ct);
         if (!response.IsSuccessStatusCode)
         {
@@ -1016,33 +1310,35 @@ public sealed class CoreHostClient : IDisposable
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
-        if (!doc.RootElement.TryGetProperty("sources", out var sources) || sources.ValueKind != JsonValueKind.Array)
-        {
-            return "Calendar sources: (none)";
-        }
-
-        var lines = new List<string> { "Calendar sources:" };
-        foreach (var src in sources.EnumerateArray())
-        {
-            var name = src.TryGetProperty("name", out var n) ? n.GetString() : null;
-            var provider = src.TryGetProperty("provider", out var p) ? p.GetString() : null;
-            var mailbox = src.TryGetProperty("mailboxName", out var m) ? m.GetString() : null;
-            var cal = src.TryGetProperty("calendarName", out var c) ? c.GetString() : null;
-            var status = src.TryGetProperty("lastSyncStatus", out var st) ? st.GetString() : null;
-            var err = src.TryGetProperty("lastSyncError", out var er) ? er.GetString() : null;
-            var identity = string.Join(" / ", new[] { mailbox, cal }.Where(x => !string.IsNullOrWhiteSpace(x)));
-            var label = string.IsNullOrWhiteSpace(identity) ? name : $"{name} ({identity})";
-            var line = $"- [{provider}] {label} — {status ?? "unknown"}";
-            if (!string.IsNullOrWhiteSpace(err))
+        var dto = await JsonSerializer.DeserializeAsync<CalendarSourcesEnvelopeDto>(stream, JsonOptions, ct);
+        return (dto?.Sources ?? [])
+            .Select(s => new CalendarSourceVm
             {
-                line += $" ({err})";
-            }
+                Id = s.Id ?? string.Empty,
+                Name = s.Name ?? string.Empty,
+                Provider = s.Provider,
+                MailboxName = s.MailboxName,
+                CalendarName = s.CalendarName,
+                Enabled = s.Enabled,
+                LastSyncStatus = s.LastSyncStatus,
+                LastSyncError = s.LastSyncError,
+            })
+            .Where(s => !string.IsNullOrWhiteSpace(s.Id))
+            .ToList();
+    }
 
-            lines.Add(line);
+    public async Task<bool> SetCalendarSourceEnabledAsync(string sourceId, bool enabled, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(sourceId))
+        {
+            return false;
         }
 
-        return lines.Count == 1 ? "Calendar sources: (none)" : string.Join("\n", lines);
+        using var response = await _http.PatchAsJsonAsync(
+            $"v1/calendar/sources/{Uri.EscapeDataString(sourceId)}",
+            new { enabled },
+            ct);
+        return response.IsSuccessStatusCode;
     }
 
     public async Task<string?> CreateSyncSnapshotAsync(CancellationToken ct = default)
@@ -1295,6 +1591,9 @@ public sealed class CoreHostClient : IDisposable
             DueAt = dto.DueAt,
             Priority = dto.Priority,
             Urgency = dto.Urgency,
+            SourceKind = dto.SourceKind,
+            SourceConfidence = dto.SourceConfidence,
+            SourceMatchReason = dto.SourceMatchReason,
         };
     }
 
@@ -1348,6 +1647,27 @@ public sealed class CoreHostClient : IDisposable
             Id = dto.Id ?? projectId,
             Name = dto.Name ?? string.Empty,
             Summary = dto.Summary,
+            Code = dto.Code,
+            Dossier = dto.Dossier is null
+                ? null
+                : new ProjectDossierVm
+                {
+                    Version = dto.Dossier.Version,
+                    Address = dto.Dossier.Address,
+                    OwnerClient = dto.Dossier.OwnerClient,
+                    Phase = dto.Dossier.Phase,
+                    Portfolio = dto.Dossier.Portfolio,
+                    LinkedFolder = dto.Dossier.LinkedFolder,
+                    CurrentPriorities = dto.Dossier.CurrentPriorities ?? [],
+                    MailboxSources = dto.Dossier.MailboxSources ?? [],
+                    CalendarSources = dto.Dossier.CalendarSources ?? [],
+                    Empty = dto.Dossier.Empty,
+                },
+            DossierEmpty = dto.DossierEmpty || dto.Dossier is null || dto.Dossier.Empty,
+            Aliases = (dto.Aliases ?? [])
+                .Where(a => !string.IsNullOrWhiteSpace(a.Id) && !string.IsNullOrWhiteSpace(a.Alias))
+                .Select(a => new ProjectAliasVm { Id = a.Id!, Alias = a.Alias! })
+                .ToList(),
             Tasks = (dto.Tasks ?? []).Select(t => new CellLineVm
             {
                 TaskId = t.TaskId ?? string.Empty,
@@ -1595,10 +1915,14 @@ public sealed class CoreHostClient : IDisposable
         var dto = await JsonSerializer.DeserializeAsync<AttachFolderDto>(stream, JsonOptions, ct);
         return dto is null
             ? null
-            : new AttachFolderResult { IndexedCount = dto.IndexedCount };
+            : new AttachFolderResult
+            {
+                IndexedCount = dto.IndexedCount,
+                Reindex = MapReindexSummary(dto.Reindex, dto.IndexedCount),
+            };
     }
 
-    public async Task<int> ReindexFolderAsync(string projectId, string folderId, CancellationToken ct = default)
+    public async Task<ReindexFolderResult> ReindexFolderAsync(string projectId, string folderId, CancellationToken ct = default)
     {
         using var response = await _http.PostAsync(
             $"v1/projects/{Uri.EscapeDataString(projectId)}/folders/{Uri.EscapeDataString(folderId)}/reindex",
@@ -1606,12 +1930,12 @@ public sealed class CoreHostClient : IDisposable
             ct);
         if (!response.IsSuccessStatusCode)
         {
-            return 0;
+            return new ReindexFolderResult();
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
         var dto = await JsonSerializer.DeserializeAsync<ReindexDto>(stream, JsonOptions, ct);
-        return dto?.IndexedCount ?? 0;
+        return MapReindexSummary(dto?.Reindex, dto?.IndexedCount ?? 0);
     }
 
     public async Task<IReadOnlyList<Views.FileHitItem>> SearchFilesAsync(string query, string? projectId, CancellationToken ct = default)
@@ -1642,6 +1966,7 @@ public sealed class CoreHostClient : IDisposable
                 Id = r.Id ?? string.Empty,
                 DisplayName = r.DisplayName ?? string.Empty,
                 Path = r.Path ?? string.Empty,
+                RelativePath = r.Path ?? string.Empty,
             })
             .Where(r => r.Id.Length > 0)
             .ToList();
@@ -1730,11 +2055,12 @@ public sealed class CoreHostClient : IDisposable
     public async Task<EmailIngestResult?> IngestEmailAsync(
         string path,
         IReadOnlyList<string>? projectIds = null,
+        string? memo = null,
         CancellationToken ct = default)
     {
         using var response = await _http.PostAsJsonAsync(
             "v1/emails/ingest",
-            new { path, projectIds = projectIds ?? Array.Empty<string>() },
+            new { path, projectIds = projectIds ?? Array.Empty<string>(), memo },
             ct);
         if (!response.IsSuccessStatusCode)
         {
@@ -2186,7 +2512,53 @@ public sealed class CoreHostClient : IDisposable
         GeneratedAt = dto.GeneratedAt ?? string.Empty,
         BriefIsSynthetic = dto.BriefIsSynthetic,
         Concerns = (dto.Concerns ?? []).Select(MapPulseConcern).ToList(),
+        UnmatchedMail = (dto.UnmatchedMail ?? []).Select(MapUnmatchedMail).ToList(),
+        Briefing = dto.Briefing is null ? null : MapBriefing(dto.Briefing),
         LastOperatorRun = dto.LastOperatorRun is null ? null : MapPulseOperatorRun(dto.LastOperatorRun),
+    };
+
+    private static PulseBriefingVm MapBriefing(PulseBriefingDto dto) => new()
+    {
+        UpcomingMeetings = (dto.UpcomingMeetings ?? []).Select(m => new PulseBriefingMeetingVm
+        {
+            Id = m.Id ?? string.Empty,
+            Title = m.Title ?? string.Empty,
+            StartsAt = m.StartsAt,
+            SourceName = m.SourceName,
+        }).ToList(),
+        TopActions = (dto.TopActions ?? []).Select(a => new PulseBriefingActionVm
+        {
+            TaskId = a.TaskId ?? string.Empty,
+            ProjectId = a.ProjectId ?? string.Empty,
+            ProjectName = a.ProjectName ?? string.Empty,
+            Title = a.Title ?? string.Empty,
+            NextAction = a.NextAction,
+        }).ToList(),
+        WaitingOn = (dto.WaitingOn ?? []).Select(w => new PulseBriefingWaitingVm
+        {
+            TaskId = w.TaskId ?? string.Empty,
+            ProjectName = w.ProjectName ?? string.Empty,
+            Title = w.Title ?? string.Empty,
+            Status = w.Status ?? string.Empty,
+            UpdatedAt = w.UpdatedAt ?? string.Empty,
+            AgeHours = w.AgeHours,
+        }).ToList(),
+        Alerts = (dto.Alerts ?? []).Select(a => new PulseBriefingAlertVm
+        {
+            Kind = a.Kind ?? string.Empty,
+            Message = a.Message ?? string.Empty,
+            ProjectId = a.ProjectId,
+        }).ToList(),
+        RecentChanges = (dto.RecentChanges ?? []).Select(c => new PulseBriefingChangeVm
+        {
+            Revision = c.Revision,
+            EntityType = c.EntityType ?? string.Empty,
+            EntityId = c.EntityId ?? string.Empty,
+            ChangeKind = c.ChangeKind ?? string.Empty,
+            SourceEvent = c.SourceEvent,
+            CreatedAt = c.CreatedAt ?? string.Empty,
+        }).ToList(),
+        ChangeCursor = dto.ChangeCursor,
     };
 
     private static ViewModels.OperatorRunVm MapPulseOperatorRun(OperatorRunDto dto) => new()
@@ -2210,6 +2582,48 @@ public sealed class CoreHostClient : IDisposable
         NextAction = dto.NextAction,
         BodyExcerpt = dto.BodyExcerpt,
         UpdatedAt = dto.UpdatedAt ?? string.Empty,
+        SourceKind = dto.SourceKind,
+        SourceConfidence = dto.SourceConfidence,
+        SourceMatchReason = dto.SourceMatchReason,
+    };
+
+    private static PulseUnmatchedMailVm MapUnmatchedMail(PulseUnmatchedMailDto dto) => new()
+    {
+        SuggestionId = dto.SuggestionId ?? string.Empty,
+        Summary = dto.Summary ?? string.Empty,
+        EmailId = dto.EmailId,
+        Subject = dto.Subject,
+        Snippet = dto.Snippet,
+        Confidence = dto.Confidence,
+        CreatedAt = dto.CreatedAt ?? string.Empty,
+    };
+
+    private static ProjectMergePreviewVm MapMergePreview(MergePreviewDto dto) => new()
+    {
+        SourceProjectId = dto.SourceProjectId ?? string.Empty,
+        SourceName = dto.SourceName ?? string.Empty,
+        TargetProjectId = dto.TargetProjectId ?? string.Empty,
+        TargetName = dto.TargetName ?? string.Empty,
+        TaskCount = dto.TaskCount,
+        NoteCount = dto.NoteCount,
+        WorkstreamCount = dto.WorkstreamCount,
+        FileLinkCount = dto.FileLinkCount,
+        EmailLinkCount = dto.EmailLinkCount,
+        ContactLinkCount = dto.ContactLinkCount,
+        AliasCount = dto.AliasCount,
+        BlockerCount = dto.BlockerCount,
+        FolderCount = dto.FolderCount,
+        Warnings = dto.Warnings ?? [],
+    };
+
+    private static ProjectMergeResultVm MapMergeResult(MergeResultDto dto) => new()
+    {
+        SourceProjectId = dto.SourceProjectId ?? string.Empty,
+        SourceName = dto.SourceName ?? string.Empty,
+        TargetProjectId = dto.TargetProjectId ?? string.Empty,
+        TargetName = dto.TargetName ?? string.Empty,
+        ArchivedSource = dto.ArchivedSource,
+        MergedAt = dto.MergedAt ?? string.Empty,
     };
 
     private static OrbitProjectVm MapOrbitProject(OrbitProjectDto dto) => new()
@@ -2221,6 +2635,8 @@ public sealed class CoreHostClient : IDisposable
         InOrbit = dto.InOrbit,
         OpenConcernCount = dto.OpenConcernCount,
         TopNextAction = dto.TopNextAction,
+        DossierEmpty = dto.DossierEmpty,
+        MissingNextAction = dto.MissingNextAction,
     };
 
     private static IgnitionProjectVm MapIgnitionProject(IgnitionProjectDto dto) => new()
@@ -2242,11 +2658,46 @@ public sealed class CoreHostClient : IDisposable
         Body = dto.Body,
     };
 
+    private static ReindexFolderResult MapReindexSummary(ReindexSummaryDto? dto, int fallbackIndexedCount)
+    {
+        if (dto is null)
+        {
+            return new ReindexFolderResult { IndexedCount = fallbackIndexedCount };
+        }
+
+        return new ReindexFolderResult
+        {
+            IndexedCount = dto.IndexedCount > 0 ? dto.IndexedCount : fallbackIndexedCount,
+            SoftSkippedDirectoryCount = dto.SoftSkippedDirectoryCount,
+            OfflinePlaceholderCount = dto.OfflinePlaceholderCount,
+            SampleRelativePaths = dto.SampleRelativePaths ?? [],
+            SoftSkippedDirectories = dto.SoftSkippedDirectories ?? [],
+            Warning = dto.Warning,
+        };
+    }
+
     public void Dispose() => _http.Dispose();
 
     public sealed class AttachFolderResult
     {
         public int IndexedCount { get; init; }
+
+        public ReindexFolderResult Reindex { get; init; } = new();
+    }
+
+    public sealed class ReindexFolderResult
+    {
+        public int IndexedCount { get; init; }
+
+        public int SoftSkippedDirectoryCount { get; init; }
+
+        public int OfflinePlaceholderCount { get; init; }
+
+        public IReadOnlyList<string> SampleRelativePaths { get; init; } = [];
+
+        public IReadOnlyList<string> SoftSkippedDirectories { get; init; } = [];
+
+        public string? Warning { get; init; }
     }
 
     public sealed class ProjectHomeFolderResult
@@ -2271,6 +2722,36 @@ public sealed class CoreHostClient : IDisposable
         public string? Summary { get; init; }
 
         public string Status { get; init; } = "active";
+    }
+
+    public sealed class CalendarSourceVm
+    {
+        public string Id { get; set; } = string.Empty;
+
+        public string Name { get; set; } = string.Empty;
+
+        public string? Provider { get; set; }
+
+        public string? MailboxName { get; set; }
+
+        public string? CalendarName { get; set; }
+
+        public bool Enabled { get; set; }
+
+        public string? LastSyncStatus { get; set; }
+
+        public string? LastSyncError { get; set; }
+
+        public string DisplayLabel
+        {
+            get
+            {
+                var identity = string.Join(
+                    " / ",
+                    new[] { MailboxName, CalendarName }.Where(x => !string.IsNullOrWhiteSpace(x)));
+                return string.IsNullOrWhiteSpace(identity) ? Name : $"{Name} ({identity})";
+            }
+        }
     }
 
     public sealed class ProjectCreateFromFolderResult
@@ -2391,6 +2872,10 @@ public sealed class CoreHostClient : IDisposable
         public double? BoardW { get; set; }
 
         public double? BoardH { get; set; }
+
+        public bool DossierEmpty { get; set; }
+
+        public bool MissingNextAction { get; set; }
     }
 
     private sealed class LineDto
@@ -2431,6 +2916,12 @@ public sealed class CoreHostClient : IDisposable
         public int? Priority { get; set; }
 
         public int? Urgency { get; set; }
+
+        public string? SourceKind { get; set; }
+
+        public double? SourceConfidence { get; set; }
+
+        public string? SourceMatchReason { get; set; }
     }
 
     private sealed class LimboNoteByIdDto
@@ -2509,6 +3000,14 @@ public sealed class CoreHostClient : IDisposable
 
         public string? Summary { get; set; }
 
+        public string? Code { get; set; }
+
+        public ProjectDossierDto? Dossier { get; set; }
+
+        public bool DossierEmpty { get; set; } = true;
+
+        public List<ProjectAliasDto>? Aliases { get; set; }
+
         public List<LineDto>? Tasks { get; set; }
 
         public List<LineDto>? CompletedTasks { get; set; }
@@ -2524,6 +3023,36 @@ public sealed class CoreHostClient : IDisposable
         public List<SuggestionDto>? Suggestions { get; set; }
 
         public List<FileDto>? Files { get; set; }
+    }
+
+    private sealed class ProjectDossierDto
+    {
+        public int Version { get; set; }
+
+        public string? Address { get; set; }
+
+        public string? OwnerClient { get; set; }
+
+        public string? Phase { get; set; }
+
+        public string? Portfolio { get; set; }
+
+        public string? LinkedFolder { get; set; }
+
+        public List<string>? CurrentPriorities { get; set; }
+
+        public List<string>? MailboxSources { get; set; }
+
+        public List<string>? CalendarSources { get; set; }
+
+        public bool Empty { get; set; } = true;
+    }
+
+    private sealed class ProjectAliasDto
+    {
+        public string? Id { get; set; }
+
+        public string? Alias { get; set; }
     }
 
     private sealed class NoteDto
@@ -2634,11 +3163,30 @@ public sealed class CoreHostClient : IDisposable
     private sealed class AttachFolderDto
     {
         public int IndexedCount { get; set; }
+
+        public ReindexSummaryDto? Reindex { get; set; }
     }
 
     private sealed class ReindexDto
     {
         public int IndexedCount { get; set; }
+
+        public ReindexSummaryDto? Reindex { get; set; }
+    }
+
+    private sealed class ReindexSummaryDto
+    {
+        public int IndexedCount { get; set; }
+
+        public int SoftSkippedDirectoryCount { get; set; }
+
+        public int OfflinePlaceholderCount { get; set; }
+
+        public List<string>? SampleRelativePaths { get; set; }
+
+        public List<string>? SoftSkippedDirectories { get; set; }
+
+        public string? Warning { get; set; }
     }
 
     private sealed class SearchDto
@@ -2936,6 +3484,30 @@ public sealed class CoreHostClient : IDisposable
         public string? Text { get; set; }
     }
 
+    private sealed class CalendarSourcesEnvelopeDto
+    {
+        public List<CalendarSourceDto>? Sources { get; set; }
+    }
+
+    private sealed class CalendarSourceDto
+    {
+        public string? Id { get; set; }
+
+        public string? Name { get; set; }
+
+        public string? Provider { get; set; }
+
+        public string? MailboxName { get; set; }
+
+        public string? CalendarName { get; set; }
+
+        public bool Enabled { get; set; }
+
+        public string? LastSyncStatus { get; set; }
+
+        public string? LastSyncError { get; set; }
+    }
+
     private sealed class PulseEnvelopeDto
     {
         public PulseDto? Pulse { get; set; }
@@ -2953,7 +3525,89 @@ public sealed class CoreHostClient : IDisposable
 
         public List<PulseConcernDto>? Concerns { get; set; }
 
+        public List<PulseUnmatchedMailDto>? UnmatchedMail { get; set; }
+
+        public PulseBriefingDto? Briefing { get; set; }
+
         public OperatorRunDto? LastOperatorRun { get; set; }
+    }
+
+    private sealed class PulseBriefingDto
+    {
+        public List<PulseBriefingMeetingDto>? UpcomingMeetings { get; set; }
+
+        public List<PulseBriefingActionDto>? TopActions { get; set; }
+
+        public List<PulseBriefingWaitingDto>? WaitingOn { get; set; }
+
+        public List<PulseBriefingAlertDto>? Alerts { get; set; }
+
+        public List<PulseBriefingChangeDto>? RecentChanges { get; set; }
+
+        public long ChangeCursor { get; set; }
+    }
+
+    private sealed class PulseBriefingMeetingDto
+    {
+        public string? Id { get; set; }
+
+        public string? Title { get; set; }
+
+        public string? StartsAt { get; set; }
+
+        public string? SourceName { get; set; }
+    }
+
+    private sealed class PulseBriefingActionDto
+    {
+        public string? TaskId { get; set; }
+
+        public string? ProjectId { get; set; }
+
+        public string? ProjectName { get; set; }
+
+        public string? Title { get; set; }
+
+        public string? NextAction { get; set; }
+    }
+
+    private sealed class PulseBriefingWaitingDto
+    {
+        public string? TaskId { get; set; }
+
+        public string? ProjectName { get; set; }
+
+        public string? Title { get; set; }
+
+        public string? Status { get; set; }
+
+        public string? UpdatedAt { get; set; }
+
+        public int AgeHours { get; set; }
+    }
+
+    private sealed class PulseBriefingAlertDto
+    {
+        public string? Kind { get; set; }
+
+        public string? Message { get; set; }
+
+        public string? ProjectId { get; set; }
+    }
+
+    private sealed class PulseBriefingChangeDto
+    {
+        public long Revision { get; set; }
+
+        public string? EntityType { get; set; }
+
+        public string? EntityId { get; set; }
+
+        public string? ChangeKind { get; set; }
+
+        public string? SourceEvent { get; set; }
+
+        public string? CreatedAt { get; set; }
     }
 
     private sealed class PulseConcernDto
@@ -2973,6 +3627,85 @@ public sealed class CoreHostClient : IDisposable
         public string? BodyExcerpt { get; set; }
 
         public string? UpdatedAt { get; set; }
+
+        public string? SourceKind { get; set; }
+
+        public double? SourceConfidence { get; set; }
+
+        public string? SourceMatchReason { get; set; }
+    }
+
+    private sealed class PulseUnmatchedMailDto
+    {
+        public string? SuggestionId { get; set; }
+
+        public string? Summary { get; set; }
+
+        public string? EmailId { get; set; }
+
+        public string? Subject { get; set; }
+
+        public string? Snippet { get; set; }
+
+        public double? Confidence { get; set; }
+
+        public string? CreatedAt { get; set; }
+    }
+
+    private sealed class MergePreviewEnvelopeDto
+    {
+        public MergePreviewDto? Preview { get; set; }
+    }
+
+    private sealed class MergePreviewDto
+    {
+        public string? SourceProjectId { get; set; }
+
+        public string? SourceName { get; set; }
+
+        public string? TargetProjectId { get; set; }
+
+        public string? TargetName { get; set; }
+
+        public int TaskCount { get; set; }
+
+        public int NoteCount { get; set; }
+
+        public int WorkstreamCount { get; set; }
+
+        public int FileLinkCount { get; set; }
+
+        public int EmailLinkCount { get; set; }
+
+        public int ContactLinkCount { get; set; }
+
+        public int AliasCount { get; set; }
+
+        public int BlockerCount { get; set; }
+
+        public int FolderCount { get; set; }
+
+        public List<string>? Warnings { get; set; }
+    }
+
+    private sealed class MergeResultEnvelopeDto
+    {
+        public MergeResultDto? Merge { get; set; }
+    }
+
+    private sealed class MergeResultDto
+    {
+        public string? SourceProjectId { get; set; }
+
+        public string? SourceName { get; set; }
+
+        public string? TargetProjectId { get; set; }
+
+        public string? TargetName { get; set; }
+
+        public bool ArchivedSource { get; set; }
+
+        public string? MergedAt { get; set; }
     }
 
     private sealed class OrbitEnvelopeDto
@@ -2997,6 +3730,10 @@ public sealed class CoreHostClient : IDisposable
         public int OpenConcernCount { get; set; }
 
         public string? TopNextAction { get; set; }
+
+        public bool DossierEmpty { get; set; }
+
+        public bool MissingNextAction { get; set; }
     }
 
     private sealed class IgnitionProjectsEnvelopeDto

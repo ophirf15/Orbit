@@ -87,6 +87,63 @@ public sealed class FileIndexServiceTests
     }
 
     [Fact]
+    public void Reindex_IncludesNestedSubfolderFiles_AndSampleRelativePaths()
+    {
+        using var temp = new TempDb();
+        var factory = OpenMigrated(temp);
+        SeedProject(factory, out var projectId);
+
+        var folderRoot = Path.Combine(temp.Root, "project-files");
+        var nested = Path.Combine(folderRoot, "contracts", "vendors");
+        Directory.CreateDirectory(nested);
+        File.WriteAllText(Path.Combine(folderRoot, "root.txt"), "root note");
+        File.WriteAllText(Path.Combine(nested, "deep.txt"), "nested vendor agreement");
+
+        var folders = new ProjectFolderStore(factory);
+        var external = new ExternalFileService(() => folders.ListActiveRootPaths());
+        var index = new FileIndexService(factory, folders, external);
+        var attached = folders.Attach(projectId, folderRoot);
+
+        var result = index.ReindexFolderDetailed(attached.Id);
+        Assert.True(result.TouchedCount >= 2);
+        Assert.Equal(0, result.SoftSkippedDirectoryCount);
+        Assert.Contains(
+            result.SampleRelativePaths,
+            p => p.Contains("deep.txt", StringComparison.OrdinalIgnoreCase)
+                 && p.Contains("contracts", StringComparison.OrdinalIgnoreCase));
+
+        var listed = index.ListForProject(projectId);
+        Assert.Contains(listed, h => h.Path.Contains(Path.Combine("contracts", "vendors"), StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(listed, h => h.DisplayName.Equals("deep.txt", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void ReindexResult_FinalizeWarning_SurfacesSoftSkipsAndPlaceholders()
+    {
+        var result = new FileReindexResult
+        {
+            TouchedCount = 3,
+            OfflinePlaceholderCount = 2,
+        };
+        result.AddSoftSkippedDirectory(@"C:\Projects\Home\cloud-only");
+        result.FinalizeWarning();
+
+        Assert.Equal(1, result.SoftSkippedDirectoryCount);
+        Assert.False(string.IsNullOrWhiteSpace(result.Warning));
+        Assert.Contains("Skipped 1 subdirectory", result.Warning, StringComparison.Ordinal);
+        Assert.Contains("online-only cloud placeholder", result.Warning, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ToRelativePath_UsesFolderRoot()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "OrbitRel", Guid.NewGuid().ToString("N"));
+        var nested = Path.Combine(root, "a", "b.txt");
+        var relative = FileIndexService.ToRelativePath(root, nested);
+        Assert.Equal(Path.Combine("a", "b.txt"), relative);
+    }
+
+    [Fact]
     public void ExternalService_DeniesPathOutsideRoots()
     {
         using var temp = new TempDb();

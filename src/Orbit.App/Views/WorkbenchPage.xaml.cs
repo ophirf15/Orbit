@@ -553,7 +553,7 @@ public sealed partial class WorkbenchPage : Page
             var shell = FindShell(root);
             if (shell is not null)
             {
-                await shell.PushOutlookSelectionAsync();
+                await shell.PushOutlookSelectionAsync(promptForMemo: true);
                 return;
             }
         }
@@ -561,7 +561,26 @@ public sealed partial class WorkbenchPage : Page
         PushOutlookButton.IsEnabled = false;
         try
         {
-            var result = await OutlookPushCoordinator.PushSelectedAsync(App.Settings, App.SettingsStore);
+            if (XamlRoot is null)
+            {
+                WorkbenchHint.Text = "Orbit UI is not ready.";
+                return;
+            }
+
+            var prompt = await OutlookPushPrompt.ShowAsync(XamlRoot);
+            if (prompt is null)
+            {
+                return;
+            }
+
+            IReadOnlyList<string>? projectIds = string.IsNullOrWhiteSpace(prompt.ProjectId)
+                ? null
+                : [prompt.ProjectId];
+            var result = await OutlookPushCoordinator.PushSelectedAsync(
+                App.Settings,
+                App.SettingsStore,
+                projectIds,
+                prompt.Memo);
             WorkbenchHint.Text = result.StatusLine + " — " + TruncateHint(result.Detail, 160);
             if (result.Ok)
             {
@@ -874,6 +893,26 @@ public sealed partial class WorkbenchPage : Page
         }
     }
 
+    private void OrbitTree_SelectionChanged(TreeView sender, TreeViewSelectionChangedEventArgs args)
+    {
+        if (sender.SelectedItem is OrbitTreeNodeVm node)
+        {
+            _selectedNode = node;
+            SyncAddButtons(node);
+            return;
+        }
+
+        if (sender.SelectedNodes.Count > 0
+            && sender.SelectedNodes[0].Content is OrbitTreeNodeVm fromNode)
+        {
+            _selectedNode = fromNode;
+            SyncAddButtons(fromNode);
+            return;
+        }
+
+        SyncAddButtons(_selectedNode);
+    }
+
     private void OrbitTree_DragItemsStarting(TreeView sender, TreeViewDragItemsStartingEventArgs args)
     {
         _treeDragNode = args.Items.OfType<OrbitTreeNodeVm>().FirstOrDefault();
@@ -1086,6 +1125,31 @@ public sealed partial class WorkbenchPage : Page
                     {
                         menu.Items.Add(nest);
                     }
+
+                    var move = new MenuFlyoutSubItem { Text = "Move to project…" };
+                    foreach (var project in _treeRoots
+                                 .Where(n => n.Kind == OrbitTreeNodeKind.Project)
+                                 .Where(n => !string.Equals(n.Id, node.ProjectId, StringComparison.Ordinal))
+                                 .OrderBy(n => n.Title, StringComparer.OrdinalIgnoreCase)
+                                 .Take(24))
+                    {
+                        var targetId = project.Id;
+                        var targetName = project.Title;
+                        var item = new MenuFlyoutItem { Text = TruncateHint(targetName, 40) };
+                        item.Click += async (_, _) => await MoveTaskToProjectAsync(node.Id, targetId, targetName);
+                        move.Items.Add(item);
+                    }
+
+                    if (move.Items.Count == 0)
+                    {
+                        move.Items.Add(new MenuFlyoutItem
+                        {
+                            Text = "No other projects",
+                            IsEnabled = false,
+                        });
+                    }
+
+                    menu.Items.Add(move);
                 }
                 else
                 {
@@ -1324,11 +1388,16 @@ public sealed partial class WorkbenchPage : Page
         }
     }
 
+    private void SyncAddButtons(OrbitTreeNodeVm? node)
+    {
+        AddTaskButton.IsEnabled = node?.Kind is OrbitTreeNodeKind.Project or OrbitTreeNodeKind.Task or OrbitTreeNodeKind.Subtask;
+        AddSubtaskButton.IsEnabled = node?.Kind is OrbitTreeNodeKind.Task or OrbitTreeNodeKind.Subtask;
+    }
+
     private async Task ShowDetailForNodeAsync(OrbitTreeNodeVm node)
     {
         _selectedNode = node;
-        AddTaskButton.IsEnabled = node.Kind is OrbitTreeNodeKind.Project or OrbitTreeNodeKind.Task or OrbitTreeNodeKind.Subtask;
-        AddSubtaskButton.IsEnabled = node.Kind is OrbitTreeNodeKind.Task or OrbitTreeNodeKind.Subtask;
+        SyncAddButtons(node);
 
         if (node.Kind == OrbitTreeNodeKind.Limbo)
         {
@@ -1735,6 +1804,15 @@ public sealed partial class WorkbenchPage : Page
             }
 
             await ArchiveEntityAsync(item.IsTaskCell ? "task" : "project", item.Id);
+        };
+        cell.MergeProjectRequested += async (_, item) =>
+        {
+            if (item.IsLimboCell || item.IsTaskCell)
+            {
+                return;
+            }
+
+            await MergeProjectIntoAsync(item);
         };
         cell.AccentColorRequested += async (_, args) => await SetProjectAccentAsync(cell, args);
         cell.SetHomeFolderRequested += async (_, project) => await SetProjectHomeFolderAsync(project);
@@ -2901,9 +2979,8 @@ public sealed partial class WorkbenchPage : Page
             DetailHost.Visibility = Visibility.Collapsed;
             DetailEmptyText.Visibility = Visibility.Visible;
             DetailEmptyText.Text = "Select a project or task";
-            _selectedNode = null;
-            AddTaskButton.IsEnabled = false;
-            AddSubtaskButton.IsEnabled = false;
+            // Keep tree selection — Add task / Add subtask stay available.
+            SyncAddButtons(_selectedNode);
             return;
         }
 
@@ -2935,6 +3012,95 @@ public sealed partial class WorkbenchPage : Page
         catch (Exception)
         {
             WorkbenchHint.Text = "Archive failed.";
+        }
+    }
+
+    private async Task MergeProjectIntoAsync(ProjectCellVm source)
+    {
+        try
+        {
+            using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+            var projects = await client.GetProjectsAsync();
+            var choices = (projects ?? [])
+                .Where(p => !string.Equals(p.Id, source.Id, StringComparison.Ordinal))
+                .Select(p => new ProjectPickUi.Choice { Id = p.Id, Name = p.Name })
+                .OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (choices.Count == 0)
+            {
+                WorkbenchHint.Text = "No other project to merge into.";
+                return;
+            }
+
+            var targetId = await ProjectPickUi.ShowPickerAsync(
+                XamlRoot,
+                choices,
+                "Merge project into…",
+                $"Choose the project that should keep the work from “{source.Name}”. The source will be archived.");
+            if (string.IsNullOrWhiteSpace(targetId))
+            {
+                return;
+            }
+
+            var preview = await client.PreviewMergeProjectAsync(source.Id, targetId);
+            if (preview is null)
+            {
+                WorkbenchHint.Text = "Could not preview merge.";
+                return;
+            }
+
+            var body = new StackPanel { Spacing = 8 };
+            body.Children.Add(new TextBlock
+            {
+                Text = $"Merge “{preview.SourceName}” into “{preview.TargetName}”?",
+                TextWrapping = TextWrapping.Wrap,
+            });
+            body.Children.Add(new TextBlock
+            {
+                Text = preview.CountsLine,
+                Opacity = 0.8,
+                TextWrapping = TextWrapping.Wrap,
+            });
+            if (preview.Warnings.Count > 0)
+            {
+                body.Children.Add(new TextBlock
+                {
+                    Text = string.Join("\n", preview.Warnings),
+                    Opacity = 0.75,
+                    TextWrapping = TextWrapping.Wrap,
+                });
+            }
+
+            var confirm = new ContentDialog
+            {
+                Title = "Confirm merge",
+                Content = body,
+                PrimaryButtonText = preview.Warnings.Count > 0 ? "Merge anyway" : "Merge",
+                CloseButtonText = "Cancel",
+                DefaultButton = ContentDialogButton.Close,
+                XamlRoot = XamlRoot,
+            };
+            if (await confirm.ShowAsync() != ContentDialogResult.Primary)
+            {
+                return;
+            }
+
+            var force = preview.Warnings.Count > 0;
+            var result = await client.MergeProjectAsync(source.Id, targetId, force);
+            if (result is null)
+            {
+                WorkbenchHint.Text = "Merge failed.";
+                return;
+            }
+
+            CloseDetailFlyout();
+            CloseDrawer();
+            await ReloadWorkbenchAsync();
+            WorkbenchHint.Text = $"Merged “{result.SourceName}” into “{result.TargetName}”.";
+        }
+        catch (Exception ex)
+        {
+            WorkbenchHint.Text = $"Merge failed: {ex.Message}";
         }
     }
 
@@ -3491,8 +3657,38 @@ public sealed partial class WorkbenchPage : Page
         try
         {
             using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+            string? applyProjectId = null;
+            if (accept)
+            {
+                var pending = await client.GetPendingSuggestionsAsync();
+                var match = pending.FirstOrDefault(s =>
+                    string.Equals(s.Id, suggestionId, StringComparison.Ordinal));
+                if (match is not null
+                    && string.Equals(match.SuggestionType, "disambiguate_email_claim", StringComparison.Ordinal)
+                    && string.IsNullOrWhiteSpace(match.ProjectId))
+                {
+                    var choices = ProjectPickUi.MergeChoices(
+                        ProjectPickUi.ParseCandidates(match.PayloadJson),
+                        await ProjectPickUi.LoadActiveProjectsAsync(client));
+                    applyProjectId = await ProjectPickUi.ShowPickerAsync(
+                        XamlRoot,
+                        choices,
+                        title: "Pick a project",
+                        message: "This email claim is ambiguous — choose a project to attach it to.");
+                    if (string.IsNullOrWhiteSpace(applyProjectId))
+                    {
+                        WorkbenchHint.Text = "Pick a project to accept this claim.";
+                        return;
+                    }
+                }
+                else
+                {
+                    applyProjectId = match?.ProjectId;
+                }
+            }
+
             var ok = accept
-                ? await client.AcceptSuggestionAsync(suggestionId)
+                ? await client.AcceptSuggestionAsync(suggestionId, applyProjectId)
                 : await client.RejectSuggestionAsync(suggestionId);
             WorkbenchHint.Text = ok
                 ? (accept ? "Suggestion accepted." : "Suggestion rejected.")
@@ -3506,6 +3702,29 @@ public sealed partial class WorkbenchPage : Page
         catch (Exception)
         {
             WorkbenchHint.Text = "Suggestion update failed.";
+        }
+    }
+
+    private async Task MoveTaskToProjectAsync(string taskId, string projectId, string projectName)
+    {
+        try
+        {
+            using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+            var (ok, error) = await client.MoveTaskAsync(taskId, projectId);
+            if (ok)
+            {
+                WorkbenchHint.Text = $"Moved task to {projectName}.";
+                await ReloadWorkbenchAsync();
+                return;
+            }
+
+            WorkbenchHint.Text = string.IsNullOrWhiteSpace(error)
+                ? "Could not move task."
+                : error;
+        }
+        catch (Exception ex)
+        {
+            WorkbenchHint.Text = $"Could not move task: {ex.Message}";
         }
     }
 

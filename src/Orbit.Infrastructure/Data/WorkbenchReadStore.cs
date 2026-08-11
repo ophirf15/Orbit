@@ -61,6 +61,8 @@ public sealed class WorkbenchReadStore
                 BoardY = project.BoardY,
                 BoardW = project.BoardW,
                 BoardH = project.BoardH,
+                DossierEmpty = project.DossierEmpty,
+                MissingNextAction = HasMissingNextAction(lines),
             });
         }
 
@@ -249,7 +251,7 @@ public sealed class WorkbenchReadStore
         using var cmd = connection.CreateCommand();
         cmd.CommandText =
             """
-            SELECT id, name, code, summary, status, accent_color, sort_order, board_x, board_y, board_w, board_h
+            SELECT id, name, code, summary, status, accent_color, sort_order, board_x, board_y, board_w, board_h, dossier_json
             FROM projects
             WHERE id = $id AND archived_at IS NULL
             LIMIT 1;
@@ -261,6 +263,7 @@ public sealed class WorkbenchReadStore
             return null;
         }
 
+        var dossier = ProjectDossier.Parse(reader.FieldCount > 11 && !reader.IsDBNull(11) ? reader.GetString(11) : null);
         return new ProjectRecord
         {
             Id = reader.GetString(0),
@@ -274,6 +277,8 @@ public sealed class WorkbenchReadStore
             BoardY = reader.IsDBNull(8) ? null : reader.GetDouble(8),
             BoardW = reader.IsDBNull(9) ? null : reader.GetDouble(9),
             BoardH = reader.IsDBNull(10) ? null : reader.GetDouble(10),
+            Dossier = dossier.IsStructurallyEmpty ? null : dossier,
+            DossierEmpty = dossier.IsStructurallyEmpty,
         };
     }
 
@@ -436,7 +441,7 @@ public sealed class WorkbenchReadStore
         using var cmd = connection.CreateCommand();
         cmd.CommandText =
             """
-            SELECT id, name, code, summary, status, accent_color, sort_order, board_x, board_y, board_w, board_h
+            SELECT id, name, code, summary, status, accent_color, sort_order, board_x, board_y, board_w, board_h, dossier_json
             FROM projects
             WHERE archived_at IS NULL
             ORDER BY sort_order ASC, name COLLATE NOCASE;
@@ -446,6 +451,7 @@ public sealed class WorkbenchReadStore
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
         {
+            var dossier = ProjectDossier.Parse(reader.FieldCount > 11 && !reader.IsDBNull(11) ? reader.GetString(11) : null);
             list.Add(new ProjectRecord
             {
                 Id = reader.GetString(0),
@@ -459,11 +465,16 @@ public sealed class WorkbenchReadStore
                 BoardY = reader.IsDBNull(8) ? null : reader.GetDouble(8),
                 BoardW = reader.IsDBNull(9) ? null : reader.GetDouble(9),
                 BoardH = reader.IsDBNull(10) ? null : reader.GetDouble(10),
+                Dossier = dossier.IsStructurallyEmpty ? null : dossier,
+                DossierEmpty = dossier.IsStructurallyEmpty,
             });
         }
 
         return list;
     }
+
+    private static bool HasMissingNextAction(IReadOnlyList<CellLineRecord>? lines) =>
+        lines is { Count: > 0 } && lines.Any(l => string.IsNullOrWhiteSpace(l.NextAction));
 
     private static Dictionary<string, IReadOnlyList<CellLineRecord>> LoadOpenTaskLines(SqliteConnection connection)
     {

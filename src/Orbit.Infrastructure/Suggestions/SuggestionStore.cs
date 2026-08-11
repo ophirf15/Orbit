@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Orbit.Core.Data;
 using Orbit.Infrastructure.Data;
+using Orbit.Infrastructure.Operator;
 
 namespace Orbit.Infrastructure.Suggestions;
 
@@ -13,8 +14,13 @@ public sealed class SuggestionStore
     };
 
     private readonly SqliteConnectionFactory _factory;
+    private readonly OperatorMemoryStore? _memory;
 
-    public SuggestionStore(SqliteConnectionFactory factory) => _factory = factory;
+    public SuggestionStore(SqliteConnectionFactory factory, OperatorMemoryStore? memory = null)
+    {
+        _factory = factory;
+        _memory = memory;
+    }
 
     public IReadOnlyList<AgentSuggestionRecord> List(string? status = null, int limit = 100)
     {
@@ -313,6 +319,18 @@ public sealed class SuggestionStore
 
         tx.Commit();
 
+        if (_memory is not null)
+        {
+            try
+            {
+                EmailRelationMemory.RememberDecision(_memory, suggestion, accepted: true);
+            }
+            catch
+            {
+                // Memory is best-effort — accept already committed.
+            }
+        }
+
         return new SuggestionAcceptResult
         {
             Suggestion = Get(id)!,
@@ -381,14 +399,18 @@ public sealed class SuggestionStore
             link.Transaction = tx;
             link.CommandText =
                 """
-                INSERT INTO email_project_links (id, email_artifact_id, project_id, created_at)
-                VALUES ($id, $email, $project, $t)
-                ON CONFLICT(email_artifact_id, project_id) DO NOTHING;
+                INSERT INTO email_project_links (id, email_artifact_id, project_id, created_at, confidence, match_reason)
+                VALUES ($id, $email, $project, $t, $confidence, $reason)
+                ON CONFLICT(email_artifact_id, project_id) DO UPDATE SET
+                  confidence = COALESCE(excluded.confidence, email_project_links.confidence),
+                  match_reason = COALESCE(excluded.match_reason, email_project_links.match_reason);
                 """;
             link.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("D"));
             link.Parameters.AddWithValue("$email", emailId);
             link.Parameters.AddWithValue("$project", projectId);
             link.Parameters.AddWithValue("$t", now);
+            link.Parameters.AddWithValue("$confidence", 1.0);
+            link.Parameters.AddWithValue("$reason", "operator");
             link.ExecuteNonQuery();
         }
 
@@ -466,6 +488,19 @@ public sealed class SuggestionStore
             now);
 
         tx.Commit();
+
+        if (_memory is not null)
+        {
+            try
+            {
+                EmailRelationMemory.RememberDecision(_memory, suggestion, accepted: false);
+            }
+            catch
+            {
+                // Memory is best-effort — reject already committed.
+            }
+        }
+
         return Get(id)!;
     }
 

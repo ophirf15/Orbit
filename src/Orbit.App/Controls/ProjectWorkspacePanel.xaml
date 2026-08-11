@@ -60,6 +60,39 @@
                                 PlaceholderText="Project summary…"
                                 Background="Transparent"
                                 BorderThickness="0" />
+                            <StackPanel Spacing="4" Margin="0,6,0,0">
+                                <TextBlock Opacity="0.7" Style="{StaticResource CaptionTextBlockStyle}" Text="Code" />
+                                <TextBox
+                                    x:Name="CodeBox"
+                                    AcceptsReturn="False"
+                                    LostFocus="CodeBox_LostFocus"
+                                    PlaceholderText="Optional short code"
+                                    Background="Transparent"
+                                    BorderThickness="0,0,0,1" />
+                                <TextBlock Opacity="0.7" Style="{StaticResource CaptionTextBlockStyle}" Text="Aliases" />
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <TextBox
+                                        x:Name="AliasInputBox"
+                                        MinWidth="140"
+                                        AcceptsReturn="False"
+                                        PlaceholderText="Add nickname…"
+                                        KeyDown="AliasInputBox_KeyDown" />
+                                    <Button Click="AddAlias_Click" Content="Add" Padding="10,4" />
+                                </StackPanel>
+                                <StackPanel x:Name="AliasesHost" Orientation="Horizontal" Spacing="6" />
+                                <TextBlock Opacity="0.7" Style="{StaticResource CaptionTextBlockStyle}" Text="Dossier" Margin="0,8,0,0" />
+                                <TextBlock
+                                    x:Name="DossierEmptyHint"
+                                    Opacity="0.55"
+                                    Style="{StaticResource CaptionTextBlockStyle}"
+                                    Text="Empty dossier — fill call-ready fields below."
+                                    Visibility="Collapsed" />
+                                <TextBox x:Name="DossierAddressBox" LostFocus="DossierField_LostFocus" PlaceholderText="Address / property" Background="Transparent" BorderThickness="0,0,0,1" />
+                                <TextBox x:Name="DossierOwnerBox" LostFocus="DossierField_LostFocus" PlaceholderText="Owner / client" Background="Transparent" BorderThickness="0,0,0,1" />
+                                <TextBox x:Name="DossierPhaseBox" LostFocus="DossierField_LostFocus" PlaceholderText="Phase" Background="Transparent" BorderThickness="0,0,0,1" />
+                                <TextBox x:Name="DossierPortfolioBox" LostFocus="DossierField_LostFocus" PlaceholderText="Portfolio" Background="Transparent" BorderThickness="0,0,0,1" />
+                                <TextBox x:Name="DossierPrioritiesBox" LostFocus="DossierField_LostFocus" PlaceholderText="Current priorities (comma-separated)" Background="Transparent" BorderThickness="0,0,0,1" />
+                            </StackPanel>
                         </StackPanel>
                         <Button
                             Grid.Column="1"

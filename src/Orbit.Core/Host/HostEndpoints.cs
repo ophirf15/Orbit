@@ -12,6 +12,10 @@ public static class HostEndpoints
     public const string ProjectById = "/v1/projects/{id}";
     public const string ProjectContext = "/v1/projects/{id}/context";
     public const string ProjectAccent = "/v1/projects/{id}/accent";
+    public const string ProjectAliases = "/v1/projects/{id}/aliases";
+    public const string ProjectAliasById = "/v1/projects/{id}/aliases/{aliasId}";
+    public const string ProjectMergePreview = "/v1/projects/merge/preview";
+    public const string ProjectMerge = "/v1/projects/merge";
     public const string WorkbenchCellLayout = "/v1/workbench/cells/{id}/layout";
     public const string ContextBundle = "/v1/context/bundle";
     public const string Workbench = "/v1/workbench";
@@ -30,6 +34,8 @@ public static class HostEndpoints
     public const string FilesWrite = "/v1/files/write";
     public const string FilesSearch = "/v1/files/search";
     public const string EmailsIngest = "/v1/emails/ingest";
+    public const string EmailsFromOutlook = "/v1/emails/from-outlook";
+    public const string OutlookAddInBootstrap = "/v1/outlook-addin/bootstrap";
     public const string EmailById = "/v1/emails/{id}";
     public const string EmailProjects = "/v1/emails/{id}/projects";
     public const string EmailOpen = "/v1/emails/{id}/open";
@@ -38,6 +44,7 @@ public static class HostEndpoints
     public const string Calendar = "/v1/calendar/context";
     public const string CalendarSync = "/v1/calendar/sync";
     public const string CalendarSources = "/v1/calendar/sources";
+    public const string CalendarSourceById = "/v1/calendar/sources/{id}";
     public const string CalendarSubscribe = "/v1/calendar/sources/subscribe";
     public const string Suggestions = "/v1/suggestions";
     public const string ConversationsSync = "/v1/conversations/sync";
@@ -52,6 +59,7 @@ public static class HostEndpoints
     public const string DiagnosticsExport = "/v1/diagnostics/export";
 
     public const string OperatorRuns = "/v1/operator/runs";
+    public const string OperatorRunsClearStuck = "/v1/operator/runs/clear-stuck";
     public const string OperatorWake = "/v1/operator/wake";
     public const string OperatorRules = "/v1/operator/rules";
     public const string OperatorMemory = "/v1/operator/memory";
@@ -85,6 +93,10 @@ public static class HostEndpoints
     public const string AgentToolUpdateTask = "/v1/agent/tools/orbit_update_task";
     public const string AgentToolCreateProject = "/v1/agent/tools/orbit_create_project";
     public const string AgentToolUpdateProject = "/v1/agent/tools/orbit_update_project";
+    public const string AgentToolMergeProject = "/v1/agent/tools/orbit_merge_project";
+    public const string AgentToolAddProjectAlias = "/v1/agent/tools/orbit_add_project_alias";
+    public const string AgentToolRemoveProjectAlias = "/v1/agent/tools/orbit_remove_project_alias";
+    public const string AgentToolListProjectAliases = "/v1/agent/tools/orbit_list_project_aliases";
     public const string AgentToolCreateWorkstream = "/v1/agent/tools/orbit_create_workstream";
     public const string AgentToolListWorkstreams = "/v1/agent/tools/orbit_list_workstreams";
     public const string AgentToolGetWorkbench = "/v1/agent/tools/orbit_get_workbench";
@@ -131,8 +143,16 @@ public static class HostEndpoints
 
     public const string AgentSnapshot = "/v1/agent/snapshot";
 
-    /// <summary>Paths that skip bearer auth when a Core API key is configured (liveness only).</summary>
-    public static bool IsAnonymousPath(string? path) =>
-        !string.IsNullOrWhiteSpace(path)
-        && string.Equals(path.TrimEnd('/'), Health, StringComparison.OrdinalIgnoreCase);
+    /// <summary>Paths that skip bearer auth when a Core API key is configured (liveness + local add-in bootstrap).</summary>
+    public static bool IsAnonymousPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        var normalized = path.TrimEnd('/');
+        return string.Equals(normalized, Health, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(normalized, OutlookAddInBootstrap, StringComparison.OrdinalIgnoreCase);
+    }
 }

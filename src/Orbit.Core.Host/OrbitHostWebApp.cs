@@ -37,8 +37,14 @@ public static class OrbitHostWebApp
 
         builder.WebHost.ConfigureKestrel(kestrel =>
         {
-            var address = System.Net.IPAddress.Parse(NormalizeListenAddress(options.BindAddress));
-            kestrel.Listen(address, options.Port);
+            // Always expose loopback so local clients (Outlook web add-in, App on same PC)
+            // keep working even when settings bind Core Host to a LAN address.
+            var primary = System.Net.IPAddress.Parse(NormalizeListenAddress(options.BindAddress));
+            kestrel.Listen(primary, options.Port);
+            if (!System.Net.IPAddress.IsLoopback(primary))
+            {
+                kestrel.Listen(System.Net.IPAddress.Loopback, options.Port);
+            }
         });
 
         builder.WebHost.UseUrls();
@@ -72,6 +78,7 @@ public static class OrbitHostWebApp
         EnsureWorkbenchStores(builder);
         EnsureFileServices(builder);
         EnsureContactServices(builder);
+        EnsureOperatorServices(builder);
         EnsureSuggestionServices(builder);
         EnsureCalendarServices(builder);
         EnsureContextServices(builder);
@@ -81,10 +88,35 @@ public static class OrbitHostWebApp
         EnsureSyncServices(builder, options);
         EnsureMalleabilityServices(builder);
         EnsureDiagnosticsServices(builder, options);
-        EnsureOperatorServices(builder);
         EnsureOrbitPulseServices(builder);
 
+        builder.Services.AddCors(cors =>
+        {
+            cors.AddPolicy("OutlookWebAddIn", policy =>
+            {
+                policy
+                    .SetIsOriginAllowed(origin =>
+                    {
+                        if (string.IsNullOrWhiteSpace(origin))
+                        {
+                            return false;
+                        }
+
+                        if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri))
+                        {
+                            return false;
+                        }
+
+                        return string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(uri.Host, "127.0.0.1", StringComparison.OrdinalIgnoreCase);
+                    })
+                    .AllowAnyHeader()
+                    .AllowAnyMethod();
+            });
+        });
+
         var app = builder.Build();
+        app.UseCors("OutlookWebAddIn");
         app.UseMiddleware<ApiKeyMiddleware>();
         app.MapMetaEndpoints();
         app.MapWorkbenchEndpoints();
@@ -226,6 +258,11 @@ public static class OrbitHostWebApp
             builder.Services.AddSingleton(sp => new ProjectWriteStore(sp.GetRequiredService<SqliteConnectionFactory>()));
         }
 
+        if (builder.Services.All(d => d.ServiceType != typeof(ProjectMergeStore)))
+        {
+            builder.Services.AddSingleton(sp => new ProjectMergeStore(sp.GetRequiredService<SqliteConnectionFactory>()));
+        }
+
         if (builder.Services.All(d => d.ServiceType != typeof(WorkbenchLayoutStore)))
         {
             builder.Services.AddSingleton(sp => new WorkbenchLayoutStore(sp.GetRequiredService<SqliteConnectionFactory>()));
@@ -308,6 +345,11 @@ public static class OrbitHostWebApp
                 sp.GetRequiredService<EmailArtifactStore>(),
                 sp.GetRequiredService<TaskEmailThreadStore>(),
                 sp.GetRequiredService<OrbitMutationStore>()));
+        }
+
+        if (builder.Services.All(d => d.ServiceType != typeof(IOutlookMsgExport)))
+        {
+            builder.Services.AddSingleton<IOutlookMsgExport, OutlookMsgExport>();
         }
     }
 
@@ -405,7 +447,9 @@ public static class OrbitHostWebApp
     {
         if (builder.Services.All(d => d.ServiceType != typeof(SuggestionStore)))
         {
-            builder.Services.AddSingleton(sp => new SuggestionStore(sp.GetRequiredService<SqliteConnectionFactory>()));
+            builder.Services.AddSingleton(sp => new SuggestionStore(
+                sp.GetRequiredService<SqliteConnectionFactory>(),
+                sp.GetRequiredService<OperatorMemoryStore>()));
         }
 
         if (builder.Services.All(d => d.ServiceType != typeof(SuggestionEngine)))

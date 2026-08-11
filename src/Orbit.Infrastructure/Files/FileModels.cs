@@ -79,6 +79,16 @@ public sealed class FileSearchHit
     public string? ProjectId { get; init; }
 }
 
+public sealed class FileReindexOptions
+{
+    /// <summary>
+    /// When true (default), OneDrive/online-only placeholders are kept in the index as
+    /// <see cref="FolderAvailability.OfflinePlaceholder"/> without reading content.
+    /// When false, those files are skipped (and pruned if previously indexed).
+    /// </summary>
+    public bool IncludeOfflinePlaceholders { get; init; } = true;
+}
+
 public sealed class FileReindexResult
 {
     public int TouchedCount { get; set; }
@@ -86,4 +96,71 @@ public sealed class FileReindexResult
     public int SkippedUnchangedCount { get; set; }
 
     public int ExtractedCount { get; set; }
+
+    public int OfflinePlaceholderCount { get; set; }
+
+    public int SoftSkippedDirectoryCount { get; set; }
+
+    public List<string> SoftSkippedDirectories { get; } = new();
+
+    public List<string> SampleRelativePaths { get; } = new();
+
+    /// <summary>Human-readable warning when soft-skips or placeholders hid content.</summary>
+    public string? Warning { get; set; }
+
+    public void AddSampleRelativePath(string relativePath, int maxSamples = 8)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath) || SampleRelativePaths.Count >= maxSamples)
+        {
+            return;
+        }
+
+        if (SampleRelativePaths.Exists(p => string.Equals(p, relativePath, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        SampleRelativePaths.Add(relativePath);
+    }
+
+    public void AddSoftSkippedDirectory(string directoryPath, int maxSamples = 6)
+    {
+        SoftSkippedDirectoryCount++;
+        if (SoftSkippedDirectories.Count >= maxSamples)
+        {
+            return;
+        }
+
+        SoftSkippedDirectories.Add(directoryPath);
+    }
+
+    public void FinalizeWarning()
+    {
+        if (SoftSkippedDirectoryCount <= 0 && OfflinePlaceholderCount <= 0)
+        {
+            Warning = null;
+            return;
+        }
+
+        var parts = new List<string>();
+        if (SoftSkippedDirectoryCount > 0)
+        {
+            parts.Add(
+                SoftSkippedDirectoryCount == 1
+                    ? "Skipped 1 subdirectory (permission denied or cloud placeholder tree)."
+                    : $"Skipped {SoftSkippedDirectoryCount} subdirectories (permission denied or cloud placeholder trees).");
+            parts.Add("Files under those trees were not indexed.");
+        }
+
+        if (OfflinePlaceholderCount > 0)
+        {
+            parts.Add(
+                OfflinePlaceholderCount == 1
+                    ? "1 file is an online-only cloud placeholder (metadata only)."
+                    : $"{OfflinePlaceholderCount} files are online-only cloud placeholders (metadata only).");
+            parts.Add("Make files available offline in OneDrive to extract text.");
+        }
+
+        Warning = string.Join(' ', parts);
+    }
 }
