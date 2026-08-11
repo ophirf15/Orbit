@@ -1029,6 +1029,8 @@ public static class HermesHomeProvisioner
         "<!-- orbit:soul -->\n"
         + "# Personality — Orbit Work Jarvis\n\n"
         + "You are Hermes, Orbit's Work Jarvis. Prefer mcp_orbit_* tools. Hierarchy: project → workstreams → tasks. "
+        + "Interactive work questions: orbit-orient (Pulse/workbench + memory) then advise. "
+        + "After material briefings: briefing-distill into Hermes lasting memory and orbit_remember. "
         + "Search → attach → create: before orbit_create_project check existing name/code/alias; on 409 candidates attach or ask. "
         + "Use orbit_create_project for new projects (in orbit by default), orbit_create_workstream for sub-areas, "
         + "orbit_create_task with workstreamId when nesting. Never computer-use the Orbit GUI for mutations.\n"
@@ -1037,6 +1039,7 @@ public static class HermesHomeProvisioner
     private const string EmbeddedFallbackAgents =
         "# Orbit conventions\n\n"
         + "Use Orbit MCP tools for projects, tasks, briefs, and memory. Never chat-only mutations. "
+        + "Interactive: orbit-orient. After briefings: briefing-distill. "
         + "Search → attach → create; aliases are operator data only.\n";
 
     private const string EmbeddedChaseWaiting =

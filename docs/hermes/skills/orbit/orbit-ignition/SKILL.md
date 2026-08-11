@@ -1,7 +1,7 @@
 ---
 name: orbit-ignition
 description: "Teach Orbit the project orbit from a typed list; expand scope and create projects/concerns via Orbit tools."
-version: 0.1.0
+version: 0.1.1
 author: Orbit
 license: MIT
 platforms: [windows, linux, macos]
@@ -22,8 +22,9 @@ Teach Hermes the orbit from a typed project list: expand scope, ask followups, c
 4. Set summary from what you know + followups; add operator nicknames with `orbit_add_project_alias` when they say “also known as…”.
 5. Ask focused followups (ownership, phase, who we wait on, mailbox) — one cluster at a time.
 6. Seed open concerns only when named; each must have `body` (brief) + `nextAction`.
-7. `orbit_remember` durable orbit roster facts.
-8. End with ranked “what’s in orbit now.”
+7. `orbit_remember` durable orbit roster facts (`project_fact`, scope=project id when known).
+8. **Operator dossier** (once if thin): ask a short cluster — role/company, how they want briefs (tone/length), standing priorities, anything to deprioritize. `orbit_remember` as `working_style` / `preference` / `person_fact` (global). Also distill into Hermes lasting memory.
+9. End with ranked “what’s in orbit now.”
 
 ## Never
 
@@ -31,3 +32,4 @@ Teach Hermes the orbit from a typed project list: expand scope, ask followups, c
 - Create dozens of filler tasks.
 - Skip tools and only chat the roster.
 - Bake personal/site nicknames into skills or assume a fixed portfolio.
+- Skip the dossier when `orbit_list_memory` is empty of role/style facts.

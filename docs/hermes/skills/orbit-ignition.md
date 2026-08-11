@@ -1,6 +1,6 @@
 # Orbit Ignition
 
-Teach Hermes the orbit from a typed project list: expand scope, ask followups, create projects/concerns with living briefs via Orbit tools.
+Teach Hermes the orbit from a typed project list: expand scope, ask followups, create projects/concerns with living briefs via Orbit tools. Seed a thin operator dossier when memory is empty.
 
 ## Steps
 
@@ -11,7 +11,8 @@ Teach Hermes the orbit from a typed project list: expand scope, ask followups, c
 5. Ask focused followups (ownership, phase, who we wait on, mailbox) — one cluster at a time.
 6. Seed open concerns only when named; each must have `body` (brief) + `nextAction`.
 7. `orbit_remember` durable orbit roster facts.
-8. End with ranked “what’s in orbit now.”
+8. Operator dossier if thin: role/company, briefing style, standing priorities → `orbit_remember` + Hermes lasting memory.
+9. End with ranked “what’s in orbit now.”
 
 ## Never
 

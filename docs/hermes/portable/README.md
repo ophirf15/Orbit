@@ -9,7 +9,7 @@ Hermes owns cadence; Orbit ships a versioned, secret-free "employee kit" that `H
 | File | Materializes to | Role |
 |---|---|---|
 | `../SOUL.md` (marked `<!-- orbit:soul -->` section) | `$HERMES_HOME/SOUL.md` | Identity once; provisioner merges only the marked region, preserving anything an operator added outside it |
-| `../skills/orbit/*/SKILL.md` | `$HERMES_HOME/skills/orbit/*/SKILL.md` | Procedures Hermes cron jobs point at (no self-scheduling in the skill body) |
+| `../skills/orbit/*/SKILL.md` | `$HERMES_HOME/skills/orbit/*/SKILL.md` | Procedures Hermes cron + interactive skills point at (duty-scan, pulse-refresh, orbit-orient, briefing-distill, …) |
 | `scripts/orbit-pulse-monitor.py` | `$HERMES_HOME/scripts/orbit-pulse-monitor.py` | Cron `script=` pre-check for the Pulse monitor job — unchanged snapshot hash emits `{"wakeAgent": false}`, no LLM call |
 | `scripts/orbit-event-filter.py` | `$HERMES_HOME/scripts/orbit-event-filter.py` | Webhook route `script=` — dedupes event ids, drops junk with `[SILENT]` / `{"__hermes_ignore__": true}` |
 | `cron/jobs.manifest.json` | `$HERMES_HOME/orbit/jobs.manifest.json` (copy) + materialized into `$HERMES_HOME/cron/jobs.json` | Source of truth for morning/evening duty-scan + Pulse monitor jobs; the provisioner upserts by logical `name`, so re-running Connect never duplicates jobs |

@@ -1,7 +1,7 @@
 ---
 name: duty-scan
 description: "Morning/evening duty scan over calendar, blockers, and stalled work via Orbit tools."
-version: 0.1.0
+version: 0.1.1
 author: Orbit
 license: MIT
 platforms: [windows, linux, macos]
@@ -21,6 +21,7 @@ Morning and evening duty scan for Hermes when Orbit Core is reachable.
 3. Apply standing rules only for covered big moves; otherwise propose suggestions.
 4. Remember durable facts with `orbit_remember` when the operator learns preferences.
 5. **Always finish by calling `orbit_report_briefing`** with the ranked briefing (or `[SILENT]` if nothing material). That is how Orbit Pulse / the Hermes strip show your work — cron delivery alone does not update Orbit.
+6. If the briefing was material (not `[SILENT]`), run **briefing-distill**: standing truths → Hermes lasting memory + `orbit_remember`.
 
 ## Prerequisites
 
@@ -45,7 +46,8 @@ Prompt seed:
 ```text
 Run an Orbit duty scan. Use orbit_get_workbench, orbit_get_calendar_context (or calendar tools),
 orbit_list_rules, and orbit_list_memory. Produce a ranked next-steps briefing (max 8).
-Call orbit_remember only for durable preferences/process facts.
+Call orbit_remember only for durable preferences/process facts. After a material briefing, distill
+standing truths (briefing-distill skill).
 ```
 
 Orbit emits real change signals (`email.ingested`, material calendar/task changes). Periodic duty cadence is **Hermes cron** (ADR 0028), not Host five-minute identity pokes.

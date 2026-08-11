@@ -21,8 +21,9 @@ public static class OperatorPromptBuilder
     {
         var sb = new StringBuilder();
         sb.AppendLine("Orbit Core wake (slim). Identity and standing rules live in SOUL.md / Hermes memory.");
-        sb.AppendLine("Use Orbit MCP tools (mcp_orbit_*) for truth. Prefer skills: duty-scan, pulse-refresh, channel-to-orbit.");
+        sb.AppendLine("Use Orbit MCP tools (mcp_orbit_*) for truth. Prefer skills: duty-scan, pulse-refresh, channel-to-orbit, briefing-distill.");
         sb.AppendLine("Mutate when the match is clear; keep living brief (body) + nextAction on active tasks.");
+        sb.AppendLine("After a material briefing (not [SILENT]), distill standing truths via briefing-distill → orbit_remember.");
         sb.AppendLine("If nothing actionable, reply with only [SILENT].");
 
         sb.AppendLine();
@@ -58,6 +59,7 @@ public static class OperatorPromptBuilder
             sb.AppendLine();
             sb.AppendLine("Skill hint: attach to existing task when possible; set nextAction + body; one question if ambiguous.");
             sb.AppendLine("Do not propose weak token merges across unrelated vendor topics in the same property.");
+            sb.AppendLine("If you learn a standing preference or project fact, orbit_remember it (briefing-distill).");
         }
 
         return sb.ToString().TrimEnd();

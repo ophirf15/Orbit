@@ -19,6 +19,8 @@ gateway was down:
 - Prefer `orbit_get_related_context` / `orbit_search` scoped to anything with a
   known cursor or timestamp; do not replay full history.
 - If there is nothing stale or no signal to check, skip this step silently.
+- If you surface a material briefing, run **briefing-distill** (standing truths
+  only → Hermes lasting memory + `orbit_remember`).
 
 ## 3. Stay quiet
 

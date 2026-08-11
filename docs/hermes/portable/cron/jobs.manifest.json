@@ -7,21 +7,21 @@
       "name": "orbit-duty-scan-morning",
       "schedule": "30 7 * * *",
       "skills": ["duty-scan"],
-      "prompt": "Run the Orbit morning duty scan (see duty-scan skill). Pull calendar window, open blockers, and stalled waiting tasks via Orbit MCP tools. Rank next steps with evidence. Reply [SILENT] if nothing material changed since the last scan.",
+      "prompt": "Run the Orbit morning duty scan (see duty-scan skill). Pull calendar window, open blockers, and stalled waiting tasks via Orbit MCP tools. Rank next steps with evidence. After a material briefing, run briefing-distill for standing truths. Reply [SILENT] if nothing material changed since the last scan.",
       "deliver": "local"
     },
     {
       "name": "orbit-duty-scan-evening",
       "schedule": "0 18 * * *",
       "skills": ["duty-scan"],
-      "prompt": "Run the Orbit evening duty scan (see duty-scan skill). Recap the day: blockers cleared/opened, waiting tasks needing a chase, tomorrow's calendar. Reply [SILENT] if nothing material changed since the morning scan.",
+      "prompt": "Run the Orbit evening duty scan (see duty-scan skill). Recap the day: blockers cleared/opened, waiting tasks needing a chase, tomorrow's calendar. After a material briefing, run briefing-distill. Reply [SILENT] if nothing material changed since the morning scan.",
       "deliver": "local"
     },
     {
       "name": "orbit-pulse-monitor",
       "schedule": "*/10 * * * *",
       "skills": ["pulse-refresh"],
-      "prompt": "The attached script output is the current Orbit Pulse snapshot. It only reaches you when it changed since the last tick. Rebuild awareness (see pulse-refresh skill): ensure active concerns have a brief + next action, then reply with a short ranked briefing, or [SILENT] if nothing needs the operator's attention.",
+      "prompt": "The attached script output is the current Orbit Pulse snapshot. It only reaches you when it changed since the last tick. Rebuild awareness (see pulse-refresh skill): ensure active concerns have a brief + next action, report a short ranked briefing or [SILENT], then briefing-distill if material.",
       "monitor_script": "orbit-pulse-monitor.py",
       "deliver": "local"
     },
