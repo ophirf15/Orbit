@@ -47,8 +47,10 @@ VersionInfoVersion={#MyAppVersion}.0
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoProductName={#MyAppName}
 MinVersion=10.0.17763
-CloseApplications=yes
+CloseApplications=force
 RestartApplications=no
+; Host + MCP are separate processes; Restart Manager alone often leaves them locking DLLs
+; under {app} and %LocalAppData%\Orbit\orbit-mcp (Hermes).
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -75,7 +77,31 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilen
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+procedure KillOrbitProcesses;
+var
+  ResultCode: Integer;
+begin
+  { App / Host / MCP can each lock setup destinations (Program Files + LocalAppData). }
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM Orbit.App.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM Orbit.Core.Host.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM Orbit.Mcp.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(1500);
+end;
+
 function InitializeSetup(): Boolean;
 begin
+  Result := True;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  NeedsRestart := False;
+  KillOrbitProcesses;
+  Result := '';
+end;
+
+function InitializeUninstall(): Boolean;
+begin
+  KillOrbitProcesses;
   Result := True;
 end;

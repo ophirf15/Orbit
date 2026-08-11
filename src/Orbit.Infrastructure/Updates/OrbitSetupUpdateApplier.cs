@@ -105,8 +105,8 @@ public sealed class OrbitSetupUpdateApplier : IDisposable
             var start = new ProcessStartInfo
             {
                 FileName = target,
-                // Same AppId → in-place upgrade. CloseApplications in Orbit.iss stops Orbit first.
-                Arguments = "/SILENT /CLOSEAPPLICATIONS /NORESTART /SUPPRESSMSGBOXES",
+                // Same AppId → in-place upgrade. Force-close App/Host/MCP (iss also taskkills).
+                Arguments = "/SILENT /FORCECLOSEAPPLICATIONS /NORESTART /SUPPRESSMSGBOXES",
                 UseShellExecute = true,
             };
 
