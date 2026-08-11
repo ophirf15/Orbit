@@ -30,6 +30,7 @@ public sealed class OrbitToolCatalogTests
                 "orbit_create_task",
                 "orbit_update_task",
                 "orbit_update_project",
+                "orbit_merge_project",
                 "orbit_add_project_alias",
                 "orbit_remove_project_alias",
                 "orbit_list_project_aliases",
