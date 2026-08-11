@@ -106,10 +106,12 @@
       <_OutlookLauncherOut Condition="Exists('$(MSBuildThisFileDirectory)..\Orbit.OutlookLauncher\bin\$(Platform)\$(Configuration)\net48\Orbit.OutlookLauncher.dll')">$(MSBuildThisFileDirectory)..\Orbit.OutlookLauncher\bin\$(Platform)\$(Configuration)\net48</_OutlookLauncherOut>
       <_OutlookLauncherOut Condition="'$(_OutlookLauncherOut)' == ''">$(MSBuildThisFileDirectory)..\Orbit.OutlookLauncher\bin\$(Configuration)\net48</_OutlookLauncherOut>
     </PropertyGroup>
+    <!-- Undefine RID: Orbit.App publish uses -r win-x64; net48 launcher has no RID graph. -->
     <MSBuild
       Projects="$(_OutlookLauncherProj)"
       Targets="Build"
       Properties="Configuration=$(Configuration);Platform=$(Platform)"
+      UndefineProperties="RuntimeIdentifier;RuntimeIdentifiers;SelfContained"
       Condition="Exists('$(_OutlookLauncherProj)')" />
     <PropertyGroup>
       <_OutlookLauncherOut Condition="Exists('$(MSBuildThisFileDirectory)..\Orbit.OutlookLauncher\bin\$(Platform)\$(Configuration)\net48\Orbit.OutlookLauncher.dll')">$(MSBuildThisFileDirectory)..\Orbit.OutlookLauncher\bin\$(Platform)\$(Configuration)\net48</_OutlookLauncherOut>

@@ -12,6 +12,10 @@
     <RegisterForComInterop>false</RegisterForComInterop>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <Version>0.1.0</Version>
+    <!-- Classic Outlook COM add-in: never RID-publish. Parent Orbit.App publish uses -r win-x64. -->
+    <RuntimeIdentifier></RuntimeIdentifier>
+    <RuntimeIdentifiers></RuntimeIdentifiers>
+    <SelfContained>false</SelfContained>
   </PropertyGroup>
 
   <ItemGroup>
