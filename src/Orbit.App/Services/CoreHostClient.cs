@@ -43,7 +43,8 @@ public sealed class CoreHostClient : IDisposable
 
         _http = handler is null ? new HttpClient() : new HttpClient(handler, disposeHandler: false);
         _http.BaseAddress = new Uri(_baseUrl + "/");
-        _http.Timeout = TimeSpan.FromSeconds(8);
+        // Ingest + tool calls on a cold Host easily exceed a few seconds (prod PCs).
+        _http.Timeout = TimeSpan.FromMinutes(2);
 
         var key = store.ReadCoreHostApiKey(settings);
         if (!string.IsNullOrWhiteSpace(key))
@@ -1415,6 +1416,23 @@ public sealed class CoreHostClient : IDisposable
     }
 
     /// <summary>Exports a redacted diagnostics JSON or zip under the Host generated root.</summary>
+    /// <summary>Exports diagnostics and returns the file path (or null on failure).</summary>
+    public async Task<string?> ExportDiagnosticsFileAsync(string format = "json", CancellationToken ct = default)
+    {
+        using var response = await _http.PostAsJsonAsync(
+            "v1/diagnostics/export",
+            new { format },
+            ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+        return doc.RootElement.TryGetProperty("path", out var p) ? p.GetString() : null;
+    }
+
     public async Task<string?> ExportDiagnosticsAsync(string format = "json", CancellationToken ct = default)
     {
         using var response = await _http.PostAsJsonAsync(
@@ -2058,55 +2076,95 @@ public sealed class CoreHostClient : IDisposable
         string? memo = null,
         CancellationToken ct = default)
     {
-        using var response = await _http.PostAsJsonAsync(
-            "v1/emails/ingest",
-            new { path, projectIds = projectIds ?? Array.Empty<string>(), memo },
-            ct);
-        if (!response.IsSuccessStatusCode)
+        try
         {
-            LastEmailIngestError = await ReadErrorMessageAsync(response, ct)
-                ?? $"Ingest HTTP {(int)response.StatusCode}";
+            using var response = await _http.PostAsJsonAsync(
+                "v1/emails/ingest",
+                new { path, projectIds = projectIds ?? Array.Empty<string>(), memo },
+                ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                LastEmailIngestError = await ReadErrorMessageAsync(response, ct)
+                    ?? $"Ingest HTTP {(int)response.StatusCode}";
+                Orbit.Infrastructure.Diagnostics.OrbitSupportLog.WriteErrorEvent(
+                    "email_ingest_http",
+                    LastEmailIngestError,
+                    path);
+                return null;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
+            var dto = await JsonSerializer.DeserializeAsync<EmailIngestDto>(stream, JsonOptions, ct);
+            if (dto is null)
+            {
+                LastEmailIngestError = "Ingest returned an empty body.";
+                Orbit.Infrastructure.Diagnostics.OrbitSupportLog.WriteErrorEvent(
+                    "email_ingest_empty",
+                    LastEmailIngestError,
+                    path);
+                return null;
+            }
+
+            LastEmailIngestError = null;
+
+            return new EmailIngestResult
+            {
+                Id = dto.Id ?? string.Empty,
+                Subject = dto.Subject,
+                SentAt = dto.SentAt,
+                InternetMessageId = dto.InternetMessageId,
+                ConversationId = dto.ConversationId,
+                BodyPreview = dto.BodyPreview,
+                RawPath = dto.RawPath,
+                WasExisting = dto.WasExisting,
+                Participants = (dto.Participants ?? [])
+                    .Select(p => new EmailParticipantResult
+                    {
+                        Role = p.Role ?? string.Empty,
+                        Address = p.Address ?? string.Empty,
+                        DisplayName = p.DisplayName,
+                    })
+                    .ToList(),
+                ProjectIds = dto.ProjectIds ?? [],
+                Attachments = (dto.Attachments ?? [])
+                    .Select(a => new EmailAttachmentResult
+                    {
+                        FileName = a.FileName ?? string.Empty,
+                        Path = a.Path ?? string.Empty,
+                        SizeBytes = a.SizeBytes,
+                    })
+                    .ToList(),
+            };
+        }
+        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
+        {
+            LastEmailIngestError =
+                "Email ingest timed out waiting for Core Host (over 2 minutes). "
+                + "Host may be busy parsing a large .msg — check that Core is healthy, then retry.";
+            Orbit.Infrastructure.Diagnostics.OrbitSupportLog.WriteErrorEvent(
+                "email_ingest_timeout",
+                LastEmailIngestError,
+                ex.Message);
             return null;
         }
-
-        await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        var dto = await JsonSerializer.DeserializeAsync<EmailIngestDto>(stream, JsonOptions, ct);
-        if (dto is null)
+        catch (HttpRequestException ex)
         {
-            LastEmailIngestError = "Ingest returned an empty body.";
+            LastEmailIngestError = "Email ingest network error: " + ex.Message;
+            Orbit.Infrastructure.Diagnostics.OrbitSupportLog.WriteErrorEvent(
+                "email_ingest_http_ex",
+                LastEmailIngestError,
+                path);
             return null;
         }
-
-        LastEmailIngestError = null;
-
-        return new EmailIngestResult
+        catch (Exception ex)
         {
-            Id = dto.Id ?? string.Empty,
-            Subject = dto.Subject,
-            SentAt = dto.SentAt,
-            InternetMessageId = dto.InternetMessageId,
-            ConversationId = dto.ConversationId,
-            BodyPreview = dto.BodyPreview,
-            RawPath = dto.RawPath,
-            WasExisting = dto.WasExisting,
-            Participants = (dto.Participants ?? [])
-                .Select(p => new EmailParticipantResult
-                {
-                    Role = p.Role ?? string.Empty,
-                    Address = p.Address ?? string.Empty,
-                    DisplayName = p.DisplayName,
-                })
-                .ToList(),
-            ProjectIds = dto.ProjectIds ?? [],
-            Attachments = (dto.Attachments ?? [])
-                .Select(a => new EmailAttachmentResult
-                {
-                    FileName = a.FileName ?? string.Empty,
-                    Path = a.Path ?? string.Empty,
-                    SizeBytes = a.SizeBytes,
-                })
-                .ToList(),
-        };
+            LastEmailIngestError = "Email ingest failed: " + ex.Message;
+            Orbit.Infrastructure.Diagnostics.OrbitSupportLog.WriteErrorEvent(
+                "email_ingest_ex",
+                LastEmailIngestError,
+                ex.GetType().Name);
+            return null;
+        }
     }
 
     public async Task<bool> OpenEmailInOutlookAsync(string emailId, CancellationToken ct = default)

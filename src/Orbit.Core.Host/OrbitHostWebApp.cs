@@ -160,7 +160,8 @@ public static class OrbitHostWebApp
                     sp.GetRequiredService<CalendarReadStore>(),
                     sp.GetRequiredService<HermesHealthStatusStore>(),
                     opts.LocalDataRoot,
-                    opts.GeneratedFilesRoot);
+                    opts.GeneratedFilesRoot,
+                    sp.GetService<OperatorRunStore>());
             });
         }
     }

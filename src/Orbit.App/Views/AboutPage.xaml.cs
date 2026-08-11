@@ -1,5 +1,6 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using System.Diagnostics;
 using Orbit.Core.Updates;
 using Orbit_App.Services;
 
@@ -71,12 +72,27 @@ public sealed partial class AboutPage : Page
     private async void ExportDiagnosticsButton_Click(object sender, RoutedEventArgs e)
     {
         ExportDiagnosticsButton.IsEnabled = false;
-        DiagnosticsActionText.Text = "Exporting diagnostics…";
+        DiagnosticsActionText.Text = "Building support bundle…";
         try
         {
-            using var client = new CoreHostClient(App.Settings, App.SettingsStore);
-            var result = await client.ExportDiagnosticsAsync("json");
-            DiagnosticsActionText.Text = result ?? "Host unavailable.";
+            var result = await OrbitSupportBundle.ExportAsync(App.Settings, App.SettingsStore);
+            DiagnosticsActionText.Text = result.Message;
+            if (result.Ok && !string.IsNullOrWhiteSpace(result.ZipPath))
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = "explorer.exe",
+                        Arguments = $"/select,\"{result.ZipPath}\"",
+                        UseShellExecute = true,
+                    });
+                }
+                catch
+                {
+                    // path still shown
+                }
+            }
         }
         catch (Exception ex)
         {

@@ -97,7 +97,12 @@ public static class OutlookPushCoordinator
                     .ConfigureAwait(true);
                 if (ingested is null)
                 {
-                    failNotes.Add(mail.Subject ?? Path.GetFileName(mail.MsgPath));
+                    var reason = client.LastEmailIngestError ?? "unknown ingest error";
+                    failNotes.Add($"{mail.Subject ?? Path.GetFileName(mail.MsgPath)}: {reason}");
+                    Orbit.Infrastructure.Diagnostics.OrbitSupportLog.WriteErrorEvent(
+                        "outlook_push_ingest_null",
+                        reason,
+                        mail.Subject);
                     continue;
                 }
 
@@ -108,6 +113,10 @@ public static class OutlookPushCoordinator
             catch (Exception ex)
             {
                 failNotes.Add($"{mail.Subject ?? "mail"}: {ex.Message}");
+                Orbit.Infrastructure.Diagnostics.OrbitSupportLog.WriteErrorEvent(
+                    "outlook_push_ex",
+                    ex.Message,
+                    mail.Subject);
             }
             finally
             {

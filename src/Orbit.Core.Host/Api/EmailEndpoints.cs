@@ -2,6 +2,7 @@ using Orbit.Core.Host;
 using Orbit.Core.Host.Auth;
 using Orbit.Core.Host.Events;
 using Orbit.Core.Operator;
+using Orbit.Infrastructure.Diagnostics;
 using Orbit.Infrastructure.Email;
 using Orbit.Infrastructure.Hermes;
 using System.Net;
@@ -484,6 +485,7 @@ public static class EmailEndpoints
             }
             catch (Exception ex)
             {
+                OrbitSupportLog.WriteHost("email_ingest", "Ingest failed: " + ex.Message, ex);
                 return Results.Json(
                     ApiErrors.Create(ApiErrorCodes.BadRequest, $"Email ingest failed: {ex.Message}", requestId),
                     statusCode: 500);

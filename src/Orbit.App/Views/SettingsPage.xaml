@@ -263,7 +263,7 @@
                         <Button
                             x:Name="ExportDiagnosticsButton"
                             Click="ExportDiagnosticsButton_Click"
-                            Content="Export diagnostics"
+                            Content="Export support bundle"
                             HorizontalAlignment="Left" />
                         <TextBlock x:Name="DiagnosticsActionText" Opacity="0.85" TextWrapping="Wrap" />
 

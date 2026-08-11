@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Orbit.Core.Settings;
@@ -598,16 +599,38 @@ public sealed partial class SettingsPage : Page
     private async void ExportDiagnosticsButton_Click(object sender, RoutedEventArgs e)
     {
         ExportDiagnosticsButton.IsEnabled = false;
-        DiagnosticsActionText.Text = "Exporting diagnostics…";
+        DiagnosticsActionText.Text = "Building support bundle…";
         try
         {
-            using var client = new CoreHostClient(App.Settings, App.SettingsStore);
-            var result = await client.ExportDiagnosticsAsync("json");
-            DiagnosticsActionText.Text = result ?? "Host unavailable.";
+            var result = await OrbitSupportBundle.ExportAsync(App.Settings, App.SettingsStore);
+            DiagnosticsActionText.Text = result.Message;
+            if (result.Ok && !string.IsNullOrWhiteSpace(result.ZipPath))
+            {
+                try
+                {
+                    var folder = Path.GetDirectoryName(result.ZipPath);
+                    if (!string.IsNullOrWhiteSpace(folder))
+                    {
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = "explorer.exe",
+                            Arguments = $"/select,\"{result.ZipPath}\"",
+                            UseShellExecute = true,
+                        });
+                    }
+                }
+                catch
+                {
+                    // path is still in the message
+                }
+            }
         }
         catch (Exception ex)
         {
             DiagnosticsActionText.Text = "Export failed: " + ex.Message;
+            Orbit.Infrastructure.Diagnostics.OrbitSupportLog.WriteErrorEvent(
+                "support_export_ui",
+                ex.Message);
         }
         finally
         {

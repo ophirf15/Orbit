@@ -6,6 +6,7 @@ using Orbit.Agent.Contracts.Capabilities;
 using Orbit.Core.Sync;
 using Orbit.Infrastructure.Calendar;
 using Orbit.Infrastructure.Data;
+using Orbit.Infrastructure.Operator;
 using Orbit.Infrastructure.Sync;
 
 namespace Orbit.Infrastructure.Diagnostics;
@@ -26,6 +27,7 @@ public sealed class DiagnosticsBundleBuilder
     private readonly SnapshotService _sync;
     private readonly CalendarReadStore _calendar;
     private readonly HermesHealthStatusStore _hermesHealth;
+    private readonly OperatorRunStore? _runs;
     private readonly string _localDataRoot;
     private readonly string _generatedFilesRoot;
 
@@ -35,12 +37,14 @@ public sealed class DiagnosticsBundleBuilder
         CalendarReadStore calendar,
         HermesHealthStatusStore hermesHealth,
         string localDataRoot,
-        string generatedFilesRoot)
+        string generatedFilesRoot,
+        OperatorRunStore? runs = null)
     {
         _factory = factory;
         _sync = sync;
         _calendar = calendar;
         _hermesHealth = hermesHealth;
+        _runs = runs;
         _localDataRoot = localDataRoot;
         _generatedFilesRoot = generatedFilesRoot;
     }
@@ -69,6 +73,8 @@ public sealed class DiagnosticsBundleBuilder
                     CheckedAtUtc = hermes.CheckedAtUtc,
                 },
             CalendarProviders = calendar,
+            RecentOperatorRuns = SafeRecentRuns(),
+            SupportLogDirectory = OrbitSupportLog.LogDirectory,
             Capabilities = CapabilityCatalog.All
                 .Select(c => new CapabilitySummary
                 {
@@ -77,7 +83,7 @@ public sealed class DiagnosticsBundleBuilder
                     Status = c.Status,
                 })
                 .ToList(),
-            Redactions = ["apiKeys", "hermesKeyFileContents", "emailBodies", "coreHostApiKey"],
+            Redactions = ["apiKeys", "hermesKeyFileContents", "emailBodies", "coreHostApiKey", "triggerPayloadJson"],
         };
     }
 
@@ -109,9 +115,27 @@ public sealed class DiagnosticsBundleBuilder
             var entry = zip.CreateEntry(jsonName, CompressionLevel.Optimal);
             using var stream = entry.Open();
             JsonSerializer.Serialize(stream, report, JsonOptions);
+
+            TryAddLog(zip, OrbitSupportLog.HostLogPath, "logs/orbit-host.log");
+            TryAddLog(zip, OrbitSupportLog.ErrorsJsonlPath, "logs/errors.jsonl");
         }
 
         return zipPath;
+    }
+
+    private static void TryAddLog(ZipArchive zip, string path, string entryName)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                zip.CreateEntryFromFile(path, entryName, CompressionLevel.Optimal);
+            }
+        }
+        catch
+        {
+            // ignore
+        }
     }
 
     private string EnsureExportDir()
@@ -119,6 +143,34 @@ public sealed class DiagnosticsBundleBuilder
         var dir = Path.Combine(_generatedFilesRoot, "diagnostics");
         Directory.CreateDirectory(dir);
         return dir;
+    }
+
+    private IReadOnlyList<OperatorRunSummary> SafeRecentRuns()
+    {
+        try
+        {
+            if (_runs is null)
+            {
+                return [];
+            }
+
+            return _runs.ListRecent(15)
+                .Select(r => new OperatorRunSummary
+                {
+                    Id = r.Id,
+                    TriggerKind = r.TriggerKind,
+                    Status = r.Status,
+                    BriefingSummary = Truncate(r.BriefingSummary, 240),
+                    ErrorText = Truncate(r.ErrorText, 400),
+                    CreatedAt = r.CreatedAt,
+                    CompletedAt = r.CompletedAt,
+                })
+                .ToList();
+        }
+        catch (Exception)
+        {
+            return [];
+        }
     }
 
     private IReadOnlyList<string> SafeGetSchemaVersions()
@@ -148,7 +200,6 @@ public sealed class DiagnosticsBundleBuilder
                     Enabled = s.Enabled,
                     LastSyncAt = s.LastSyncAt,
                     LastSyncStatus = s.LastSyncStatus,
-                    // lastSyncError is operational metadata, not email body content.
                     LastSyncError = Truncate(s.LastSyncError, 200),
                 })
                 .ToList();
@@ -224,9 +275,30 @@ public sealed class DiagnosticsReport
 
     public IReadOnlyList<CalendarProviderSummary> CalendarProviders { get; init; } = [];
 
+    public IReadOnlyList<OperatorRunSummary> RecentOperatorRuns { get; init; } = [];
+
+    public string? SupportLogDirectory { get; init; }
+
     public IReadOnlyList<CapabilitySummary> Capabilities { get; init; } = [];
 
     public IReadOnlyList<string> Redactions { get; init; } = [];
+}
+
+public sealed class OperatorRunSummary
+{
+    public string Id { get; init; } = string.Empty;
+
+    public string TriggerKind { get; init; } = string.Empty;
+
+    public string Status { get; init; } = string.Empty;
+
+    public string? BriefingSummary { get; init; }
+
+    public string? ErrorText { get; init; }
+
+    public string? CreatedAt { get; init; }
+
+    public string? CompletedAt { get; init; }
 }
 
 public sealed class SyncStatusSummary

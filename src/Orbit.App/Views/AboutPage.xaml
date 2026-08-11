@@ -74,7 +74,7 @@
                     x:Name="ExportDiagnosticsButton"
                     AutomationProperties.Name="Export diagnostics"
                     Click="ExportDiagnosticsButton_Click"
-                    Content="Export diagnostics" />
+                    Content="Export support bundle" />
             </StackPanel>
             <TextBlock
                 x:Name="DiagnosticsActionText"

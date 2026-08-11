@@ -39,11 +39,17 @@ $progKey = "HKCU:\Software\Classes\$progId"
 $lockbackKey = "HKCU:\Software\Classes\Interface\{000C0601-0000-0000-C000-000000000046}"
 
 function Clear-OutlookQuarantine {
-    Remove-Item "HKCU:\Software\Microsoft\Office\16.0\Outlook\Resiliency\CrashingAddinList" -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item "HKCU:\Software\Microsoft\Office\16.0\Outlook\Resiliency\DisabledItems" -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item "HKCU:\Software\Microsoft\Office\16.0\Outlook\Addins\$progId" -Recurse -Force -ErrorAction SilentlyContinue
-    New-Item "HKCU:\Software\Microsoft\Office\16.0\Outlook\Resiliency\DoNotDisableAddinList" -Force | Out-Null
-    Set-ItemProperty "HKCU:\Software\Microsoft\Office\16.0\Outlook\Resiliency\DoNotDisableAddinList" -Name $progId -Value 1 -Type DWord
+    foreach ($ver in @("16.0", "15.0", "14.0")) {
+        $root = "HKCU:\Software\Microsoft\Office\$ver\Outlook\Resiliency"
+        Remove-Item "$root\CrashingAddinList" -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item "$root\DisabledItems" -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item "$root\StartupItems" -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item "$root\DoNotDisableAddinList" -Force | Out-Null
+        Set-ItemProperty "$root\DoNotDisableAddinList" -Name $progId -Value 1 -Type DWord
+        New-Item "$root\AddinList" -Force | Out-Null
+        Set-ItemProperty "$root\AddinList" -Name $progId -Value 1 -Type DWord -ErrorAction SilentlyContinue
+        Remove-ItemProperty "HKCU:\Software\Microsoft\Office\$ver\Outlook\AddInLoadTimes" -Name $progId -ErrorAction SilentlyContinue
+    }
 }
 
 function Unregister-Launcher {
@@ -132,6 +138,10 @@ Set-ItemProperty -Path $addinKey -Name "FriendlyName" -Value "Orbit"
 Set-ItemProperty -Path $addinKey -Name "Description" -Value "Send selected mail to the Orbit app (launch only)"
 Set-ItemProperty -Path $addinKey -Name "LoadBehavior" -Value 3 -Type DWord
 
+# Pin again after LoadBehavior write (Outlook slow-start quarantine).
+Clear-OutlookQuarantine
+Set-ItemProperty -Path $addinKey -Name "LoadBehavior" -Value 3 -Type DWord
+
 Write-Host ""
 Write-Host "Registered: $progId"
 Write-Host "Install dir: $installDir"
@@ -139,6 +149,7 @@ Write-Host ""
 Write-Host "Next:"
 Write-Host "  1. Start Orbit once (registers orbit://push-outlook)."
 Write-Host "  2. Start Classic Outlook."
-Write-Host "  3. Mail/Home tab -> Send to Orbit."
+Write-Host "  3. If Outlook says Orbit slows startup, choose Always enable this add-in."
+Write-Host "  4. Mail/Home tab -> Send to Orbit."
 Write-Host "Or use Settings → Classic Outlook add-in → Install / Update."
 Write-Host "Unregister: .\scripts\register-outlook-launcher.ps1 -Unregister"

@@ -28,6 +28,7 @@ public static class OutlookLauncherSetup
         bool PayloadAvailable,
         bool InstalledFilesPresent,
         bool OutlookRunning,
+        bool DisabledByOutlook,
         string? PayloadDirectory,
         string Summary);
 
@@ -36,20 +37,36 @@ public static class OutlookLauncherSetup
     public static Status GetStatus()
     {
         var payload = FindPayloadDirectory();
-        var registered = IsRegistered();
+        var loadBehavior = ReadLoadBehavior();
+        var registered = loadBehavior == 3;
+        var disabled = loadBehavior is 0 or 2;
         var files = File.Exists(InstalledDllPath);
         var outlook = IsOutlookRunning();
-        var summary = registered
-            ? files
+        string summary;
+        if (disabled && files)
+        {
+            summary = outlook
+                ? "Installed but disabled by Outlook (slow-start quarantine). Click Install / Update, then restart Outlook. If prompted that Orbit slows startup, choose Always enable."
+                : "Installed but disabled by Outlook. Click Install / Update to clear quarantine, then start Outlook and choose Always enable if prompted.";
+        }
+        else if (registered)
+        {
+            summary = files
                 ? outlook
                     ? "Installed — Classic Outlook is open (close it before updating the add-in DLL)."
                     : "Installed — Mail tab shows Send to Orbit after Outlook restart if needed."
-                : "Registered, but DLL missing — click Install / Update."
-            : payload is null
-                ? "Not installed — Outlook launcher payload missing from this Orbit build."
-                : "Not installed — click Install to add Send to Orbit in Classic Outlook.";
+                : "Registered, but DLL missing — click Install / Update.";
+        }
+        else if (payload is null)
+        {
+            summary = "Not installed — Outlook launcher payload missing from this Orbit build.";
+        }
+        else
+        {
+            summary = "Not installed — click Install to add Send to Orbit in Classic Outlook.";
+        }
 
-        return new Status(registered, payload is not null, files, outlook, payload, summary);
+        return new Status(registered, payload is not null, files, outlook, disabled, payload, summary);
     }
 
     public static Result InstallOrUpdate()
@@ -77,14 +94,17 @@ public static class OutlookLauncherSetup
             ClearOutlookQuarantine();
             RegisterCom(InstalledDllPath);
             RegisterAddIn();
+            // Re-assert after quarantine clears — Outlook may have left LoadBehavior=0.
+            ForceEnableLoadBehavior();
+            PinDoNotDisable();
 
             OrbitPushActivation.EnsureProtocolRegistered();
 
             var restart = IsOutlookRunning()
-                ? " Restart Classic Outlook if the ribbon button does not appear."
-                : " Start Classic Outlook — Mail tab → Send to Orbit.";
+                ? " Close and restart Classic Outlook. If Outlook warns that Orbit slows startup, choose Always enable this add-in."
+                : " Start Classic Outlook — if it warns that Orbit slows startup, choose Always enable this add-in. Mail tab → Send to Orbit.";
 
-            return new Result(true, "Outlook add-in installed." + restart);
+            return new Result(true, "Outlook add-in installed (kept enabled)." + restart);
         }
         catch (Exception ex)
         {
@@ -202,7 +222,10 @@ public static class OutlookLauncherSetup
         return null;
     }
 
-    public static bool IsRegistered()
+    public static bool IsRegistered() => ReadLoadBehavior() == 3;
+
+    /// <summary>Outlook LoadBehavior DWORD, or null if the add-in key is missing.</summary>
+    public static int? ReadLoadBehavior()
     {
         try
         {
@@ -210,16 +233,20 @@ public static class OutlookLauncherSetup
                 @"Software\Microsoft\Office\Outlook\Addins\" + ProgId);
             if (key is null)
             {
-                return false;
+                return null;
             }
 
             var load = key.GetValue("LoadBehavior");
-            return load is int i && i == 3
-                   || load is long l && l == 3;
+            return load switch
+            {
+                int i => i,
+                long l => (int)l,
+                _ => null,
+            };
         }
         catch
         {
-            return false;
+            return null;
         }
     }
 
@@ -365,6 +392,13 @@ public static class OutlookLauncherSetup
         key.SetValue("LoadBehavior", 3, RegistryValueKind.DWord);
     }
 
+    private static void ForceEnableLoadBehavior()
+    {
+        using var key = Registry.CurrentUser.CreateSubKey(
+            @"Software\Microsoft\Office\Outlook\Addins\" + ProgId);
+        key.SetValue("LoadBehavior", 3, RegistryValueKind.DWord);
+    }
+
     private static void EnsureLockbackBypass()
     {
         const string lockback = @"Software\Classes\Interface\{000C0601-0000-0000-C000-000000000046}";
@@ -375,15 +409,69 @@ public static class OutlookLauncherSetup
         }
     }
 
+    /// <summary>
+    /// Clears Outlook's "disabled for slowing startup / crashing" quarantine and pins
+    /// DoNotDisable so the thin launcher stays on (HKCU only — no admin required).
+    /// </summary>
     private static void ClearOutlookQuarantine()
     {
-        TryDeleteRegistryKey(@"Software\Microsoft\Office\16.0\Outlook\Resiliency\CrashingAddinList");
-        TryDeleteRegistryKey(@"Software\Microsoft\Office\16.0\Outlook\Resiliency\DisabledItems");
-        TryDeleteRegistryKey(@"Software\Microsoft\Office\16.0\Outlook\Addins\" + ProgId);
+        foreach (var version in new[] { "16.0", "15.0", "14.0" })
+        {
+            var root = $@"Software\Microsoft\Office\{version}\Outlook\Resiliency";
+            TryDeleteRegistryKey(root + @"\CrashingAddinList");
+            TryDeleteRegistryKey(root + @"\DisabledItems");
+            TryDeleteRegistryKey(root + @"\StartupItems");
 
-        using var donot = Registry.CurrentUser.CreateSubKey(
-            @"Software\Microsoft\Office\16.0\Outlook\Resiliency\DoNotDisableAddinList");
-        donot.SetValue(ProgId, 1, RegistryValueKind.DWord);
+            // Forget prior slow-load measurements for our ProgId.
+            try
+            {
+                using var times = Registry.CurrentUser.OpenSubKey(
+                    $@"Software\Microsoft\Office\{version}\Outlook\AddInLoadTimes",
+                    writable: true);
+                times?.DeleteValue(ProgId, throwOnMissingValue: false);
+            }
+            catch
+            {
+                // ignore
+            }
+
+            try
+            {
+                using var donot = Registry.CurrentUser.CreateSubKey(root + @"\DoNotDisableAddinList");
+                donot.SetValue(ProgId, 1, RegistryValueKind.DWord);
+            }
+            catch
+            {
+                // ignore
+            }
+
+            try
+            {
+                using var allow = Registry.CurrentUser.CreateSubKey(root + @"\AddinList");
+                allow.SetValue(ProgId, 1, RegistryValueKind.DWord);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+    }
+
+    private static void PinDoNotDisable()
+    {
+        foreach (var version in new[] { "16.0", "15.0", "14.0" })
+        {
+            try
+            {
+                using var donot = Registry.CurrentUser.CreateSubKey(
+                    $@"Software\Microsoft\Office\{version}\Outlook\Resiliency\DoNotDisableAddinList");
+                donot.SetValue(ProgId, 1, RegistryValueKind.DWord);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
     }
 
     private static void TryDeleteRegistryKey(string relativePath)
