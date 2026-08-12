@@ -1,7 +1,6 @@
 using System.Collections;
 using System.Collections.ObjectModel;
 using System.Text;
-using System.Text.RegularExpressions;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -156,7 +155,19 @@ public sealed partial class WorkbenchPage : Page
 
     public void FocusLimboCapture()
     {
-        AgentInputBox.Focus(FocusState.Programmatic);
+        _ = PromptAndCreateTaskSafeAsync(defaultProjectId: null);
+    }
+
+    private async Task PromptAndCreateTaskSafeAsync(string? defaultProjectId, string? parentTaskId = null)
+    {
+        try
+        {
+            await PromptAndCreateTaskAsync(defaultProjectId, parentTaskId);
+        }
+        catch (Exception ex)
+        {
+            WorkbenchHint.Text = $"Capture failed: {ex.Message}";
+        }
     }
 
     private double BoardViewportHeight =>
@@ -164,12 +175,25 @@ public sealed partial class WorkbenchPage : Page
 
     private void WorkbenchRoot_DragOver(object sender, DragEventArgs e)
     {
+        // In-app tree moves must not be claimed as email/folder drops.
+        if (_treeDragNode is not null || MsgDropHelper.LooksLikeOrbitTreeDrag(e.DataView))
+        {
+            e.AcceptedOperation = DataPackageOperation.None;
+            return;
+        }
+
         if (_scopeProjectId is null && FolderDropHelper.LooksLikeFolderDrop(e.DataView))
         {
             e.AcceptedOperation = DataPackageOperation.Copy;
             e.DragUIOverride.IsCaptionVisible = true;
             e.DragUIOverride.Caption = "Create project from folder";
             e.DragUIOverride.IsGlyphVisible = true;
+            return;
+        }
+
+        if (!MsgDropHelper.LooksLikeMsgDrop(e.DataView))
+        {
+            e.AcceptedOperation = DataPackageOperation.None;
             return;
         }
 
@@ -183,6 +207,11 @@ public sealed partial class WorkbenchPage : Page
     private async void WorkbenchRoot_Drop(object sender, DragEventArgs e)
     {
         e.Handled = true;
+        if (_treeDragNode is not null || MsgDropHelper.LooksLikeOrbitTreeDrag(e.DataView))
+        {
+            return;
+        }
+
         if (_scopeProjectId is null)
         {
             var folderPath = await FolderDropHelper.TryGetFolderPathAsync(e.DataView);
@@ -655,7 +684,7 @@ public sealed partial class WorkbenchPage : Page
             var limboCount = snapshot.Limbo.Count;
             WorkbenchHint.Text = limboCount == 0
                 ? "Select a project or task · Hermes keeps briefs warm."
-                : $"{limboCount} in Limbo · capture via the box below.";
+                : $"{limboCount} in Limbo · Add task to capture.";
 
             var meetings = await client.GetUpcomingMeetingLinesAsync();
             UpcomingMeetingsText.Text = FormatUpcomingMeetingsLine(meetings);
@@ -924,7 +953,10 @@ public sealed partial class WorkbenchPage : Page
             return;
         }
 
-        args.Data.SetText(_treeDragNode.Id);
+        // Tag the package so Shell/Workbench email handlers ignore this drag.
+        // Text prefix is the reliable Drop recovery path; custom format helps DragOver Contains checks.
+        args.Data.SetData(MsgDropHelper.OrbitTreeDragFormat, _treeDragNode.Id);
+        args.Data.SetText(MsgDropHelper.OrbitTreeDragPrefix + _treeDragNode.Id);
         args.Data.RequestedOperation = DataPackageOperation.Move;
     }
 
@@ -932,7 +964,99 @@ public sealed partial class WorkbenchPage : Page
     {
         // TreeView may reorder siblings during drag — keep Completed pinned last.
         PinCompletedGroups();
-        _treeDragNode = null;
+        // Do NOT clear _treeDragNode here: Completed can fire before Drop on WinUI TreeView.
+        // Drop / deferred clear owns lifetime.
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            // If Drop already ran, this is a no-op; if drag was cancelled, release the node.
+            if (_treeDragNode is not null && args.DropResult == DataPackageOperation.None)
+            {
+                _treeDragNode = null;
+            }
+        });
+    }
+
+    private void OrbitTree_DragOver(object sender, DragEventArgs e)
+    {
+        e.Handled = true;
+
+        if (MsgDropHelper.LooksLikeMsgDrop(e.DataView)
+            || FolderDropHelper.LooksLikeFolderDrop(e.DataView))
+        {
+            // Let WorkbenchRoot / Shell handle external file drops.
+            e.AcceptedOperation = DataPackageOperation.None;
+            return;
+        }
+
+        var drag = _treeDragNode;
+        if (drag is null && !MsgDropHelper.LooksLikeOrbitTreeDrag(e.DataView))
+        {
+            e.AcceptedOperation = DataPackageOperation.None;
+            return;
+        }
+
+        var target = NodeFromVisual(e.OriginalSource) ?? OrbitTree.SelectedItem as OrbitTreeNodeVm;
+        if (drag is not null)
+        {
+            var action = ResolveTreeDropAction(drag, target);
+            if (action.Kind == TreeDropKind.Reject)
+            {
+                e.AcceptedOperation = DataPackageOperation.None;
+                if (!string.IsNullOrWhiteSpace(action.Hint))
+                {
+                    e.DragUIOverride.IsCaptionVisible = true;
+                    e.DragUIOverride.Caption = action.Hint;
+                }
+
+                return;
+            }
+
+            e.AcceptedOperation = DataPackageOperation.Move;
+            e.DragUIOverride.IsCaptionVisible = true;
+            e.DragUIOverride.IsGlyphVisible = false;
+            e.DragUIOverride.Caption = action.Kind switch
+            {
+                TreeDropKind.MoveToProject => $"Move to {target?.Title}",
+                TreeDropKind.NestTask => $"Nest under {target?.Title}",
+                TreeDropKind.UnnestTask => "Move to project root",
+                TreeDropKind.CompleteTask => "Mark complete",
+                TreeDropKind.ReorderProject => "Reorder project",
+                _ => "Move",
+            };
+            return;
+        }
+
+        // Drag node was cleared early — still allow drop; resolve id in Drop.
+        e.AcceptedOperation = DataPackageOperation.Move;
+        e.DragUIOverride.IsGlyphVisible = false;
+    }
+
+    private async Task<OrbitTreeNodeVm?> TryResolveTreeDragNodeAsync(DataPackageView view)
+    {
+        try
+        {
+            if (view.Contains(StandardDataFormats.Text))
+            {
+                var text = await view.GetTextAsync();
+                if (MsgDropHelper.TryParseOrbitTreeDragId(text, out var prefixedId)
+                    && _nodesById.TryGetValue(prefixedId, out var fromPrefix))
+                {
+                    return fromPrefix;
+                }
+
+                if (!string.IsNullOrWhiteSpace(text)
+                    && _nodesById.TryGetValue(text.Trim(), out var fromText))
+                {
+                    return fromText;
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // Ignore package read failures; Drop becomes a no-op.
+        }
+
+        return null;
     }
 
     private void PinCompletedGroups()
@@ -956,72 +1080,177 @@ public sealed partial class WorkbenchPage : Page
         }
     }
 
-    private void OrbitTree_DragOver(object sender, DragEventArgs e)
-    {
-        if (_treeDragNode is null && !e.DataView.Contains(StandardDataFormats.Text))
-        {
-            return;
-        }
+    private void OrbitTreeItem_DragOver(object sender, DragEventArgs e) => OrbitTree_DragOver(OrbitTree, e);
 
-        e.AcceptedOperation = DataPackageOperation.Move;
-        e.DragUIOverride.IsGlyphVisible = false;
-    }
+    private async void OrbitTreeItem_Drop(object sender, DragEventArgs e) => await OrbitTree_DropAsync(e);
 
-    private async void OrbitTree_Drop(object sender, DragEventArgs e)
+    private async void OrbitTree_Drop(object sender, DragEventArgs e) => await OrbitTree_DropAsync(e);
+
+    private async Task OrbitTree_DropAsync(DragEventArgs e)
     {
+        e.Handled = true;
         var drag = _treeDragNode;
-        _treeDragNode = null;
-        if (drag is null)
-        {
-            return;
-        }
-
-        var target = NodeFromVisual(e.OriginalSource) ?? OrbitTree.SelectedItem as OrbitTreeNodeVm;
-        if (target is null || ReferenceEquals(target, drag) || string.Equals(target.Id, drag.Id, StringComparison.Ordinal))
-        {
-            return;
-        }
-
         try
         {
-            if (drag.Kind == OrbitTreeNodeKind.Project && target.Kind == OrbitTreeNodeKind.Project)
+            if (drag is null)
             {
-                await ReorderProjectRelativeAsync(drag.Id, target.Id, insertBefore: true);
+                drag = await TryResolveTreeDragNodeAsync(e.DataView);
+            }
+
+            if (drag is null)
+            {
                 return;
             }
 
-            if (drag.Kind is not (OrbitTreeNodeKind.Task or OrbitTreeNodeKind.Subtask))
+            var target = NodeFromVisual(e.OriginalSource) ?? OrbitTree.SelectedItem as OrbitTreeNodeVm;
+            var action = ResolveTreeDropAction(drag, target);
+            switch (action.Kind)
             {
-                return;
-            }
+                case TreeDropKind.ReorderProject:
+                    await ReorderProjectRelativeAsync(drag.Id, target!.Id, insertBefore: true);
+                    break;
+                case TreeDropKind.NestTask:
+                    await NestTaskUnderAsync(drag.Id, target!.Id);
+                    break;
+                case TreeDropKind.UnnestTask:
+                    await UnnestTaskAsync(drag.Id);
+                    break;
+                case TreeDropKind.CompleteTask:
+                    await MarkTaskCompleteAsync(drag.Id);
+                    break;
+                case TreeDropKind.MoveToProject:
+                    await MoveTaskToProjectAsync(drag.Id, target!.Id, target.Title);
+                    break;
+                case TreeDropKind.Reject:
+                    if (!string.IsNullOrWhiteSpace(action.Hint))
+                    {
+                        WorkbenchHint.Text = action.Hint;
+                    }
 
-            if (target.Kind is OrbitTreeNodeKind.Task or OrbitTreeNodeKind.Subtask)
-            {
-                await NestTaskUnderAsync(drag.Id, target.Id);
-                return;
-            }
-
-            if (target.Kind == OrbitTreeNodeKind.Project
-                && string.Equals(drag.ProjectId, target.ProjectId ?? target.Id, StringComparison.Ordinal))
-            {
-                await UnnestTaskAsync(drag.Id);
-                return;
-            }
-
-            if (target.Kind == OrbitTreeNodeKind.Completed
-                && string.Equals(drag.ProjectId, target.ProjectId, StringComparison.Ordinal))
-            {
-                await MarkTaskCompleteAsync(drag.Id);
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unhandled tree drop kind: {action.Kind}");
             }
         }
         catch (Exception ex)
         {
-            WorkbenchHint.Text = $"Drop failed: {ex.GetType().Name}";
+            WorkbenchHint.Text = $"Drop failed: {ex.Message}";
         }
         finally
         {
+            _treeDragNode = null;
             PinCompletedGroups();
         }
+    }
+
+    /// <summary>Classifies OrbitTree drop targets for drag affordance and Drop handling.</summary>
+    private static TreeDropAction ResolveTreeDropAction(OrbitTreeNodeVm? drag, OrbitTreeNodeVm? target)
+    {
+        if (drag is null || target is null
+            || ReferenceEquals(target, drag)
+            || string.Equals(target.Id, drag.Id, StringComparison.Ordinal))
+        {
+            return TreeDropAction.Reject;
+        }
+
+        if (target.Kind == OrbitTreeNodeKind.Limbo
+            || drag.Kind == OrbitTreeNodeKind.Limbo
+            || drag.Kind == OrbitTreeNodeKind.Completed)
+        {
+            return TreeDropAction.Reject with { Hint = "Can't drop there." };
+        }
+
+        if (drag.Kind == OrbitTreeNodeKind.Project)
+        {
+            return target.Kind == OrbitTreeNodeKind.Project
+                ? TreeDropAction.ReorderProject
+                : TreeDropAction.Reject with { Hint = "Projects can only reorder among projects." };
+        }
+
+        if (drag.Kind is not (OrbitTreeNodeKind.Task or OrbitTreeNodeKind.Subtask))
+        {
+            return TreeDropAction.Reject;
+        }
+
+        if (target.Kind is OrbitTreeNodeKind.Task or OrbitTreeNodeKind.Subtask)
+        {
+            if (IsTreeDescendant(drag, target.Id))
+            {
+                return TreeDropAction.Reject with { Hint = "Can't nest a task under its own subtask." };
+            }
+
+            if (!string.Equals(drag.ProjectId, target.ProjectId, StringComparison.Ordinal))
+            {
+                return TreeDropAction.Reject with
+                {
+                    Hint = "Drop on the other project to move first, then nest.",
+                };
+            }
+
+            return TreeDropAction.NestTask;
+        }
+
+        if (target.Kind == OrbitTreeNodeKind.Project)
+        {
+            var targetProjectId = target.ProjectId ?? target.Id;
+            if (string.Equals(drag.ProjectId, targetProjectId, StringComparison.Ordinal))
+            {
+                if (string.IsNullOrWhiteSpace(drag.ParentTaskId) && drag.Kind == OrbitTreeNodeKind.Task)
+                {
+                    return TreeDropAction.Reject with { Hint = "Already at this project's root." };
+                }
+
+                return TreeDropAction.UnnestTask;
+            }
+
+            return TreeDropAction.MoveToProject;
+        }
+
+        if (target.Kind == OrbitTreeNodeKind.Completed)
+        {
+            if (string.Equals(drag.ProjectId, target.ProjectId, StringComparison.Ordinal))
+            {
+                return TreeDropAction.CompleteTask;
+            }
+
+            return TreeDropAction.Reject with { Hint = "Drop on a project to move, or Completed in the same project to finish." };
+        }
+
+        return TreeDropAction.Reject with { Hint = "Can't drop there." };
+    }
+
+    private readonly record struct TreeDropAction(TreeDropKind Kind, string? Hint = null)
+    {
+        public static TreeDropAction ReorderProject => new(TreeDropKind.ReorderProject);
+        public static TreeDropAction NestTask => new(TreeDropKind.NestTask);
+        public static TreeDropAction UnnestTask => new(TreeDropKind.UnnestTask);
+        public static TreeDropAction CompleteTask => new(TreeDropKind.CompleteTask);
+        public static TreeDropAction MoveToProject => new(TreeDropKind.MoveToProject);
+        public static TreeDropAction Reject => new(TreeDropKind.Reject);
+    }
+
+    private enum TreeDropKind
+    {
+        Reject,
+        ReorderProject,
+        NestTask,
+        UnnestTask,
+        CompleteTask,
+        MoveToProject,
+    }
+
+    private static bool IsTreeDescendant(OrbitTreeNodeVm ancestor, string candidateId)
+    {
+        foreach (var child in ancestor.Children)
+        {
+            if (string.Equals(child.Id, candidateId, StringComparison.Ordinal)
+                || IsTreeDescendant(child, candidateId))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static OrbitTreeNodeVm? NodeFromVisual(object? source)
@@ -1079,8 +1308,9 @@ public sealed partial class WorkbenchPage : Page
                 AddMenu(menu, "Add task", async () =>
                 {
                     _selectedNode = node;
-                    await CreateTaskUnderAsync(node.Id, parentTaskId: null, title: "New task");
+                    await PromptAndCreateTaskAsync(node.Id);
                 });
+                AddMenu(menu, "This is the wrong project…", () => MergeProjectIntoAsync(node.Id, node.Title));
                 AddMenu(menu, "Move up", () => MoveProjectAsync(node.Id, -1));
                 AddMenu(menu, "Move down", () => MoveProjectAsync(node.Id, +1));
                 AddMenu(menu, "Archive project", () => ArchiveEntityAsync("project", node.Id));
@@ -1093,6 +1323,7 @@ public sealed partial class WorkbenchPage : Page
 
             case OrbitTreeNodeKind.Limbo:
                 AddMenu(menu, "Open limbo", () => ShowDetailForNodeAsync(node));
+                AddMenu(menu, "Add task", () => PromptAndCreateTaskAsync(defaultProjectId: null));
                 break;
 
             case OrbitTreeNodeKind.Task:
@@ -1104,7 +1335,7 @@ public sealed partial class WorkbenchPage : Page
                     AddMenu(menu, "Add subtask", async () =>
                     {
                         _selectedNode = node;
-                        await CreateTaskUnderAsync(node.ProjectId ?? string.Empty, parentTaskId: node.Id, title: "New subtask");
+                        await PromptAndCreateTaskAsync(node.ProjectId, parentTaskId: node.Id);
                     });
                     AddMenu(menu, "Mark complete", () => MarkTaskCompleteAsync(node.Id));
                     if (node.Kind == OrbitTreeNodeKind.Subtask || !string.IsNullOrWhiteSpace(node.ParentTaskId))
@@ -1320,6 +1551,13 @@ public sealed partial class WorkbenchPage : Page
             return;
         }
 
+        if (_nodesById.TryGetValue(childId, out var child)
+            && IsTreeDescendant(child, parentId))
+        {
+            WorkbenchHint.Text = "Can't nest a task under its own subtask.";
+            return;
+        }
+
         using var client = new CoreHostClient(App.Settings, App.SettingsStore);
         await TryUnlinkRelatesParentsAsync(client, childId);
         if (!await client.LinkTasksAsync(
@@ -1390,7 +1628,7 @@ public sealed partial class WorkbenchPage : Page
 
     private void SyncAddButtons(OrbitTreeNodeVm? node)
     {
-        AddTaskButton.IsEnabled = node?.Kind is OrbitTreeNodeKind.Project or OrbitTreeNodeKind.Task or OrbitTreeNodeKind.Subtask;
+        AddTaskButton.IsEnabled = true;
         AddSubtaskButton.IsEnabled = node?.Kind is OrbitTreeNodeKind.Task or OrbitTreeNodeKind.Subtask;
     }
 
@@ -1401,7 +1639,7 @@ public sealed partial class WorkbenchPage : Page
 
         if (node.Kind == OrbitTreeNodeKind.Limbo)
         {
-            DetailEmptyText.Text = "Limbo captures — use quick capture below.";
+            DetailEmptyText.Text = "Limbo captures — use Add task to park a new item here.";
             DetailEmptyText.Visibility = Visibility.Visible;
             DetailHost.Content = null;
             DetailHost.Visibility = Visibility.Collapsed;
@@ -1571,15 +1809,8 @@ public sealed partial class WorkbenchPage : Page
 
     private async void AddTask_Click(object sender, RoutedEventArgs e)
     {
-        var projectId = _selectedNode?.ProjectId
-            ?? (_selectedNode?.Kind == OrbitTreeNodeKind.Project ? _selectedNode.Id : null);
-        if (string.IsNullOrWhiteSpace(projectId))
-        {
-            WorkbenchHint.Text = "Select a project first.";
-            return;
-        }
-
-        await CreateTaskUnderAsync(projectId, parentTaskId: null, title: "New task");
+        var projectId = ResolveDefaultCaptureProjectId();
+        await PromptAndCreateTaskAsync(projectId);
     }
 
     private async void AddSubtask_Click(object sender, RoutedEventArgs e)
@@ -1595,7 +1826,60 @@ public sealed partial class WorkbenchPage : Page
         var parentId = _selectedNode.Kind == OrbitTreeNodeKind.Subtask
             ? (_selectedNode.ParentTaskId ?? _selectedNode.Id)
             : _selectedNode.Id;
-        await CreateTaskUnderAsync(_selectedNode.ProjectId!, parentId, "New subtask");
+        await PromptAndCreateTaskAsync(_selectedNode.ProjectId, parentTaskId: parentId);
+    }
+
+    private string? ResolveDefaultCaptureProjectId()
+    {
+        if (_selectedNode is null)
+        {
+            return null;
+        }
+
+        return _selectedNode.Kind switch
+        {
+            OrbitTreeNodeKind.Project => _selectedNode.Id,
+            OrbitTreeNodeKind.Task or OrbitTreeNodeKind.Subtask or OrbitTreeNodeKind.Completed
+                => _selectedNode.ProjectId,
+            OrbitTreeNodeKind.Limbo => null,
+            _ => null,
+        };
+    }
+
+    private async Task<bool> PromptAndCreateTaskAsync(
+        string? defaultProjectId,
+        string? parentTaskId = null,
+        string? initialTitle = null)
+    {
+        var isSubtask = !string.IsNullOrWhiteSpace(parentTaskId);
+        if (XamlRoot is null)
+        {
+            WorkbenchHint.Text = "UI not ready for capture.";
+            return false;
+        }
+
+        var result = await TaskCapturePrompt.ShowAsync(
+            XamlRoot,
+            defaultProjectId: defaultProjectId,
+            dialogTitle: isSubtask ? "New subtask" : "New task",
+            showProjectPicker: !isSubtask,
+            allowLimbo: !isSubtask,
+            initialTitle: initialTitle);
+
+        if (result is null)
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(result.ProjectId))
+        {
+            WorkbenchHint.Text = "Parking in Limbo…";
+            await CaptureAsync(result.Title, projectId: null, projectName: "Limbo");
+            return true;
+        }
+
+        await CreateTaskUnderAsync(result.ProjectId, parentTaskId, result.Title);
+        return true;
     }
 
     private async Task CreateTaskUnderAsync(string projectId, string? parentTaskId, string title)
@@ -1619,13 +1903,105 @@ public sealed partial class WorkbenchPage : Page
                     reason: "subtask");
             }
 
-            await ReloadWorkbenchAsync();
-            await SelectTaskInTreeAsync(created.Value.Id);
+            if (!TrySoftInsertCreatedTask(
+                    created.Value.Id,
+                    created.Value.Title,
+                    created.Value.ProjectId,
+                    parentTaskId,
+                    out var inserted))
+            {
+                await ReloadWorkbenchAsync();
+                await SelectTaskInTreeAsync(created.Value.Id);
+            }
+            else if (inserted is not null)
+            {
+                await ShowDetailForNodeAsync(inserted);
+            }
+
+            WorkbenchHint.Text = $"Created “{created.Value.Title}”.";
         }
         catch (Exception ex)
         {
             WorkbenchHint.Text = $"Create failed: {ex.Message}";
         }
+    }
+
+    /// <summary>
+    /// Inserts a newly created task into the local tree — avoids a full workbench reload flicker.
+    /// </summary>
+    private bool TrySoftInsertCreatedTask(
+        string taskId,
+        string title,
+        string projectId,
+        string? parentTaskId,
+        out OrbitTreeNodeVm? inserted)
+    {
+        inserted = null;
+        if (string.IsNullOrWhiteSpace(taskId) || string.IsNullOrWhiteSpace(projectId))
+        {
+            return false;
+        }
+
+        OrbitTreeNodeVm? parent;
+        OrbitTreeNodeKind kind;
+        if (!string.IsNullOrWhiteSpace(parentTaskId)
+            && _nodesById.TryGetValue(parentTaskId, out var parentTask)
+            && parentTask.Kind is OrbitTreeNodeKind.Task or OrbitTreeNodeKind.Subtask)
+        {
+            parent = parentTask;
+            kind = OrbitTreeNodeKind.Subtask;
+        }
+        else if (_nodesById.TryGetValue(projectId, out var project)
+                 && project.Kind == OrbitTreeNodeKind.Project)
+        {
+            parent = project;
+            kind = OrbitTreeNodeKind.Task;
+        }
+        else
+        {
+            return false;
+        }
+
+        var node = new OrbitTreeNodeVm
+        {
+            Kind = kind,
+            Id = taskId,
+            ProjectId = projectId,
+            ParentTaskId = string.IsNullOrWhiteSpace(parentTaskId) ? null : parentTaskId,
+            Title = title,
+            Status = "not_started",
+            NextAction = "Define next move",
+        };
+
+        if (!_nodesById.TryAdd(taskId, node))
+        {
+            return false;
+        }
+
+        if (parent.Kind == OrbitTreeNodeKind.Project)
+        {
+            var insertAt = parent.Children.Count;
+            for (var i = 0; i < parent.Children.Count; i++)
+            {
+                if (parent.Children[i].Kind == OrbitTreeNodeKind.Completed)
+                {
+                    insertAt = i;
+                    break;
+                }
+            }
+
+            parent.Children.Insert(insertAt, node);
+        }
+        else
+        {
+            parent.Children.Add(node);
+        }
+
+        _selectedNode = node;
+        SyncAddButtons(node);
+        OrbitTree.SelectedItem = node;
+        inserted = node;
+        return true;
     }
 
     private void CellScroller_SizeChanged(object sender, SizeChangedEventArgs e)
@@ -1812,7 +2188,7 @@ public sealed partial class WorkbenchPage : Page
                 return;
             }
 
-            await MergeProjectIntoAsync(item);
+            await MergeProjectIntoAsync(item.Id, item.Name);
         };
         cell.AccentColorRequested += async (_, args) => await SetProjectAccentAsync(cell, args);
         cell.SetHomeFolderRequested += async (_, project) => await SetProjectHomeFolderAsync(project);
@@ -2057,67 +2433,75 @@ public sealed partial class WorkbenchPage : Page
 
     private async Task HandleAgentRailCommandAsync(string text)
     {
-        // Legacy chat rail stays hidden; replies surface under the capture box + status line.
+        // Legacy chat rail stays hidden; replies surface under the Hermes box + status line.
         EnsureAgentRailVisible();
         AgentQuickReply.Visibility = Visibility.Collapsed;
         AgentQuickReply.Text = string.Empty;
 
-        if (TryParseNewProjectIntent(text, out var projectName) && !string.IsNullOrWhiteSpace(projectName))
+        var intent = WorkbenchRailIntent.Classify(text);
+        switch (intent.Kind)
         {
-            WorkbenchHint.Text = "Creating project…";
-            try
+            case WorkbenchRailIntent.Kind.Empty:
+                return;
+
+            case WorkbenchRailIntent.Kind.NewProject:
+                await CreateProjectFromRailAsync(intent.Payload);
+                return;
+
+            case WorkbenchRailIntent.Kind.Capture:
             {
-                using var client = new CoreHostClient(App.Settings, App.SettingsStore);
-                var created = await client.CreateProjectAsync(projectName!);
-                if (created is null)
+                // Prefill capture dialog — confirm before create (no silent blank orphans).
+                var created = await PromptAndCreateTaskAsync(
+                    ResolveDefaultCaptureProjectId(),
+                    initialTitle: intent.Payload);
+                if (!created)
                 {
-                    ShowQuickReply("Could not create project.");
-                    WorkbenchHint.Text = "Could not create project.";
-                    return;
+                    AgentInputBox.Text = text;
+                    AgentInputBox.SelectionStart = AgentInputBox.Text.Length;
                 }
 
-                ShowQuickReply($"Created project “{created.Name}”.");
-                WorkbenchHint.Text = $"Created project {created.Name}.";
-                await ReloadWorkbenchAsync();
-            }
-            catch (Exception ex)
-            {
-                ShowQuickReply(ex.Message);
-                WorkbenchHint.Text = $"New project failed: {ex.Message}";
+                return;
             }
 
-            return;
+            case WorkbenchRailIntent.Kind.AskHermes:
+                await AskHermesFromRailAsync(intent.Payload);
+                return;
+
+            default:
+                throw new InvalidOperationException($"Unhandled rail intent: {intent.Kind}");
         }
+    }
 
-        var askHermes = TryParseAskHermes(text, out var askText);
-        var captureTarget = ResolveQuickCaptureTarget();
-        if (!askHermes && captureTarget is not null)
+    private async Task CreateProjectFromRailAsync(string projectName)
+    {
+        WorkbenchHint.Text = "Creating project…";
+        try
         {
-            WorkbenchHint.Text = $"Capturing to {captureTarget.Value.ProjectName}…";
-            try
+            using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+            var created = await client.CreateProjectAsync(projectName);
+            if (created is null)
             {
-                await CaptureAsync(text, captureTarget.Value.ProjectId, captureTarget.Value.ProjectName);
-                if (string.IsNullOrWhiteSpace(WorkbenchHint.Text)
-                    || WorkbenchHint.Text.StartsWith("Capturing", StringComparison.Ordinal))
-                {
-                    WorkbenchHint.Text = $"Captured to {captureTarget.Value.ProjectName}.";
-                }
-
-                ShowQuickReply($"Captured → {captureTarget.Value.ProjectName}");
-            }
-            catch (Exception ex)
-            {
-                ShowQuickReply(ex.Message);
-                WorkbenchHint.Text = ex.Message;
+                ShowQuickReply("Could not create project.");
+                WorkbenchHint.Text = "Could not create project.";
+                return;
             }
 
-            return;
+            ShowQuickReply($"Created project “{created.Name}”.");
+            WorkbenchHint.Text = $"Created project {created.Name}.";
+            await ReloadWorkbenchAsync();
         }
+        catch (Exception ex)
+        {
+            ShowQuickReply(ex.Message);
+            WorkbenchHint.Text = $"New project failed: {ex.Message}";
+        }
+    }
 
-        var prompt = askHermes ? askText : text;
+    private async Task AskHermesFromRailAsync(string prompt)
+    {
         if (string.IsNullOrWhiteSpace(prompt))
         {
-            WorkbenchHint.Text = "Type a note to capture, or ? followed by a question for Hermes.";
+            WorkbenchHint.Text = "Type ? followed by a question, plain text to capture, or new project …";
             return;
         }
 
@@ -2134,7 +2518,7 @@ public sealed partial class WorkbenchPage : Page
                 ? "No reply from Hermes. Check Settings → Hermes."
                 : reply.Trim();
             ShowQuickReply(display);
-            AgentRailStatus.Text = "new project · ? ask · select project to capture";
+            AgentRailStatus.Text = "Ask, capture, or command Orbit…";
             WorkbenchHint.Text = "Hermes replied.";
             _ = SoftRefreshAfterAgentAsync(display);
         }
@@ -2159,69 +2543,6 @@ public sealed partial class WorkbenchPage : Page
             : Visibility.Visible;
     }
 
-    private static bool TryParseAskHermes(string text, out string askText)
-    {
-        askText = text;
-        if (text.StartsWith('?'))
-        {
-            askText = text[1..].Trim();
-            return askText.Length > 0;
-        }
-
-        if (text.StartsWith("ask ", StringComparison.OrdinalIgnoreCase))
-        {
-            askText = text[4..].Trim();
-            return askText.Length > 0;
-        }
-
-        if (text.StartsWith("hermes ", StringComparison.OrdinalIgnoreCase))
-        {
-            askText = text[7..].Trim();
-            return askText.Length > 0;
-        }
-
-        return false;
-    }
-
-    private (string? ProjectId, string ProjectName)? ResolveQuickCaptureTarget()
-    {
-        if (_selectedNode is null)
-        {
-            return null;
-        }
-
-        return _selectedNode.Kind switch
-        {
-            OrbitTreeNodeKind.Project when !string.IsNullOrWhiteSpace(_selectedNode.Id)
-                => (_selectedNode.Id, _selectedNode.Title),
-            OrbitTreeNodeKind.Task or OrbitTreeNodeKind.Subtask or OrbitTreeNodeKind.Completed
-                when !string.IsNullOrWhiteSpace(_selectedNode.ProjectId)
-                => (_selectedNode.ProjectId!,
-                    FindProjectTitle(_selectedNode.ProjectId!) ?? "project"),
-            OrbitTreeNodeKind.Limbo => (null, "Limbo"),
-            _ => null,
-        };
-    }
-
-    private string? FindProjectTitle(string projectId)
-    {
-        foreach (var root in _treeRoots)
-        {
-            if (root.Kind == OrbitTreeNodeKind.Project && root.Id == projectId)
-            {
-                return root.Title;
-            }
-        }
-
-        if (_nodesById.TryGetValue(projectId, out var node)
-            && node.Kind == OrbitTreeNodeKind.Project)
-        {
-            return node.Title;
-        }
-
-        return null;
-    }
-
     private void AppendAgentBubble(string role, string text)
     {
         _agentBubbles.Add(new WorkbenchAgentBubbleVm { RoleLabel = role, Text = text });
@@ -2236,25 +2557,6 @@ public sealed partial class WorkbenchPage : Page
         }
 
         AgentMessageList.ScrollIntoView(_agentBubbles[^1]);
-    }
-
-    private static bool TryParseNewProjectIntent(string text, out string? name)
-    {
-        name = null;
-        var trimmed = text.Trim();
-        var match = Regex.Match(
-            trimmed,
-            @"^(?:start\s+)?new\s+project(?:\s+[""']?(.+?)[""']?)?\s*$",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        if (!match.Success)
-        {
-            return false;
-        }
-
-        name = match.Groups[1].Success && !string.IsNullOrWhiteSpace(match.Groups[1].Value)
-            ? match.Groups[1].Value.Trim()
-            : "Untitled project";
-        return true;
     }
 
     private async Task SoftRefreshAfterAgentAsync(string? hermesReply)
@@ -3015,14 +3317,14 @@ public sealed partial class WorkbenchPage : Page
         }
     }
 
-    private async Task MergeProjectIntoAsync(ProjectCellVm source)
+    private async Task MergeProjectIntoAsync(string sourceId, string sourceName)
     {
         try
         {
             using var client = new CoreHostClient(App.Settings, App.SettingsStore);
             var projects = await client.GetProjectsAsync();
             var choices = (projects ?? [])
-                .Where(p => !string.Equals(p.Id, source.Id, StringComparison.Ordinal))
+                .Where(p => !string.Equals(p.Id, sourceId, StringComparison.Ordinal))
                 .Select(p => new ProjectPickUi.Choice { Id = p.Id, Name = p.Name })
                 .OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
@@ -3035,14 +3337,14 @@ public sealed partial class WorkbenchPage : Page
             var targetId = await ProjectPickUi.ShowPickerAsync(
                 XamlRoot,
                 choices,
-                "Merge project into…",
-                $"Choose the project that should keep the work from “{source.Name}”. The source will be archived.");
+                "Merge into…",
+                $"This looks like the wrong project. Choose the project that should keep the work from “{sourceName}”. The source will be archived.");
             if (string.IsNullOrWhiteSpace(targetId))
             {
                 return;
             }
 
-            var preview = await client.PreviewMergeProjectAsync(source.Id, targetId);
+            var preview = await client.PreviewMergeProjectAsync(sourceId, targetId);
             if (preview is null)
             {
                 WorkbenchHint.Text = "Could not preview merge.";
@@ -3086,7 +3388,7 @@ public sealed partial class WorkbenchPage : Page
             }
 
             var force = preview.Warnings.Count > 0;
-            var result = await client.MergeProjectAsync(source.Id, targetId, force);
+            var result = await client.MergeProjectAsync(sourceId, targetId, force);
             if (result is null)
             {
                 WorkbenchHint.Text = "Merge failed.";
@@ -3139,7 +3441,9 @@ public sealed partial class WorkbenchPage : Page
 
             if (context.Blockers.Count > 0)
             {
-                DrawerBody.Children.Add(Section("Blockers", context.Blockers));
+                DrawerBody.Children.Add(Section(
+                    "Blockers",
+                    context.Blockers.Select(b => b.Summary)));
             }
 
             if (context.Notes.Count > 0)
@@ -3259,7 +3563,11 @@ public sealed partial class WorkbenchPage : Page
 
             DrawerBody.Children.Add(TaskNoteCaptureSection(projectId, taskId));
 
-            var taskBlockers = context.Blockers; // host returns summary strings only; show project blockers
+            var taskBlockers = context.Blockers
+                .Where(b => string.IsNullOrWhiteSpace(b.TaskId)
+                            || string.Equals(b.TaskId, taskId, StringComparison.Ordinal))
+                .Select(b => b.Summary)
+                .ToList();
             if (taskBlockers.Count > 0)
             {
                 DrawerBody.Children.Add(Section("Blockers", taskBlockers));
@@ -3710,21 +4018,140 @@ public sealed partial class WorkbenchPage : Page
         try
         {
             using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+            // Cross-project moves drop nest links so the task lands at the target project root.
+            await TryUnlinkRelatesParentsAsync(client, taskId);
             var (ok, error) = await client.MoveTaskAsync(taskId, projectId);
-            if (ok)
+            if (!ok)
             {
-                WorkbenchHint.Text = $"Moved task to {projectName}.";
-                await ReloadWorkbenchAsync();
+                WorkbenchHint.Text = string.IsNullOrWhiteSpace(error)
+                    ? "Could not move task."
+                    : error;
                 return;
             }
 
-            WorkbenchHint.Text = string.IsNullOrWhiteSpace(error)
-                ? "Could not move task."
-                : error;
+            if (_nodesById.TryGetValue(taskId, out var moved))
+            {
+                foreach (var child in EnumerateTaskDescendants(moved))
+                {
+                    var (childOk, childError) = await client.MoveTaskAsync(child.Id, projectId);
+                    if (!childOk)
+                    {
+                        WorkbenchHint.Text = string.IsNullOrWhiteSpace(childError)
+                            ? "Moved task, but a subtask failed to follow."
+                            : childError;
+                        await ReloadWorkbenchAsync();
+                        await SelectTaskInTreeAsync(taskId);
+                        return;
+                    }
+                }
+            }
+
+            WorkbenchHint.Text = $"Moved task to {projectName}.";
+            if (!TrySoftMoveTaskToProject(taskId, projectId))
+            {
+                await ReloadWorkbenchAsync();
+            }
+
+            await SelectTaskInTreeAsync(taskId);
         }
         catch (Exception ex)
         {
             WorkbenchHint.Text = $"Could not move task: {ex.Message}";
+        }
+    }
+
+    private static IEnumerable<OrbitTreeNodeVm> EnumerateTaskDescendants(OrbitTreeNodeVm node)
+    {
+        foreach (var child in node.Children)
+        {
+            if (child.Kind is OrbitTreeNodeKind.Task or OrbitTreeNodeKind.Subtask)
+            {
+                yield return child;
+                foreach (var nested in EnumerateTaskDescendants(child))
+                {
+                    yield return nested;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Relocates a task (and nested children) under another project node without a full reload.
+    /// </summary>
+    private bool TrySoftMoveTaskToProject(string taskId, string projectId)
+    {
+        if (!_nodesById.TryGetValue(taskId, out var node)
+            || node.Kind is not (OrbitTreeNodeKind.Task or OrbitTreeNodeKind.Subtask)
+            || !_nodesById.TryGetValue(projectId, out var project)
+            || project.Kind != OrbitTreeNodeKind.Project)
+        {
+            return false;
+        }
+
+        if (!TryDetachTreeNode(node))
+        {
+            return false;
+        }
+
+        ApplyProjectIdRecursive(node, projectId);
+        node.ParentTaskId = null;
+        node.Kind = OrbitTreeNodeKind.Task;
+
+        var insertAt = project.Children.Count;
+        for (var i = 0; i < project.Children.Count; i++)
+        {
+            if (project.Children[i].Kind == OrbitTreeNodeKind.Completed)
+            {
+                insertAt = i;
+                break;
+            }
+        }
+
+        project.Children.Insert(insertAt, node);
+        _selectedNode = node;
+        SyncAddButtons(node);
+        OrbitTree.SelectedItem = node;
+        PinCompletedGroups();
+        return true;
+    }
+
+    private bool TryDetachTreeNode(OrbitTreeNodeVm node)
+    {
+        foreach (var root in _treeRoots)
+        {
+            if (TryRemoveFromParent(root, node))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryRemoveFromParent(OrbitTreeNodeVm parent, OrbitTreeNodeVm node)
+    {
+        if (parent.Children.Remove(node))
+        {
+            return true;
+        }
+
+        foreach (var child in parent.Children)
+        {
+            if (TryRemoveFromParent(child, node))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static void ApplyProjectIdRecursive(OrbitTreeNodeVm node, string projectId)
+    {
+        node.ProjectId = projectId;
+        foreach (var child in node.Children)
+        {
+            ApplyProjectIdRecursive(child, projectId);
         }
     }
 

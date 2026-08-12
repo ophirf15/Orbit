@@ -17,6 +17,7 @@ using Orbit.Infrastructure.Malleability;
 using Orbit.Infrastructure.Search;
 using Orbit.Infrastructure.Operator;
 using Orbit.Infrastructure.Pulse;
+using Orbit.Infrastructure.Settings;
 using Orbit.Infrastructure.Suggestions;
 using Orbit.Infrastructure.Sync;
 
@@ -216,7 +217,20 @@ public static class OrbitHostWebApp
                     opts.LocalDataRoot,
                     opts.DeviceId,
                     opts.DeviceName,
-                    () => opts.OneDriveSnapshotFolder,
+                    () =>
+                    {
+                        // Pick up Settings saves without requiring a Host restart.
+                        try
+                        {
+                            var latest = new JsonOrbitSettingsStore().Load().OneDriveSnapshotFolder;
+                            opts.OneDriveSnapshotFolder = latest;
+                            return latest;
+                        }
+                        catch (Exception)
+                        {
+                            return opts.OneDriveSnapshotFolder;
+                        }
+                    },
                     sp.GetService<SnapshotSyncOptions>());
             });
         }
@@ -495,6 +509,13 @@ public static class OrbitHostWebApp
         if (builder.Services.All(d => d.ServiceType != typeof(ChangeLogStore)))
         {
             builder.Services.AddSingleton(sp => new ChangeLogStore(sp.GetRequiredService<SqliteConnectionFactory>()));
+        }
+
+        if (builder.Services.All(d => d.ServiceType != typeof(TaskHistoryReadStore)))
+        {
+            builder.Services.AddSingleton(sp => new TaskHistoryReadStore(
+                sp.GetRequiredService<SqliteConnectionFactory>(),
+                sp.GetRequiredService<ChangeLogStore>()));
         }
 
         if (builder.Services.All(d => d.ServiceType != typeof(OrbitIgnitionService)))

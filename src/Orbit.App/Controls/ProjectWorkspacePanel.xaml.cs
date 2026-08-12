@@ -413,28 +413,18 @@ public sealed partial class ProjectWorkspacePanel : UserControl
 
     private async void AddInQuadrant_Click(object sender, RoutedEventArgs e)
     {
-        if (_projectId is null || sender is not Button { Tag: string quad })
+        if (_projectId is null || sender is not Button { Tag: string quad } || XamlRoot is null)
         {
             return;
         }
 
-        var box = new TextBox { PlaceholderText = "New task title…" };
-        var dialog = new ContentDialog
-        {
-            Title = "Add task",
-            Content = box,
-            PrimaryButtonText = "Add",
-            CloseButtonText = "Cancel",
-            DefaultButton = ContentDialogButton.Primary,
-            XamlRoot = XamlRoot,
-        };
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
-        {
-            return;
-        }
-
-        var title = box.Text?.Trim() ?? string.Empty;
-        if (title.Length == 0)
+        var result = await TaskCapturePrompt.ShowAsync(
+            XamlRoot,
+            defaultProjectId: _projectId,
+            dialogTitle: "Add task",
+            showProjectPicker: false,
+            allowLimbo: false);
+        if (result is null || string.IsNullOrWhiteSpace(result.Title))
         {
             return;
         }
@@ -448,7 +438,7 @@ public sealed partial class ProjectWorkspacePanel : UserControl
         };
 
         using var client = new CoreHostClient(App.Settings, App.SettingsStore);
-        var created = await client.CreateTaskAsync(title, _projectId, status: "not_started");
+        var created = await client.CreateTaskAsync(result.Title, _projectId, status: "not_started");
         if (created is null)
         {
             FooterHint.Text = "Could not create task.";

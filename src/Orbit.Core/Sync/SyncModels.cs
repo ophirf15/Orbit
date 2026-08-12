@@ -73,6 +73,18 @@ public sealed class SyncStatus
     public SyncConflictInfo? Conflict { get; init; }
 
     public DateTimeOffset? LastSnapshotAt { get; init; }
+
+    /// <summary>Local device id used on outbound snapshot manifests.</summary>
+    public string? DeviceId { get; init; }
+
+    /// <summary>
+    /// True when local DB is empty and a valid cloud snapshot exists — App should offer
+    /// Continue from backup (no silent restore; ADR 0016 UX).
+    /// </summary>
+    public bool ContinueFromBackupAvailable { get; init; }
+
+    /// <summary>Human hint for periodic auto-backup (e.g. quiet-period wording).</summary>
+    public string? AutoBackupHint { get; init; }
 }
 
 /// <summary>Local lineage metadata (lives next to the live DB, not in OneDrive).</summary>

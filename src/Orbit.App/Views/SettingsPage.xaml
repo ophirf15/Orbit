@@ -57,6 +57,16 @@
                         <FontIcon Glyph="&#xE715;" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
+                <NavigationViewItem Content="Backup &amp; sync" Tag="backup">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE8B7;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Content="Updates" Tag="updates">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE895;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
                 <NavigationViewItem Content="Advanced" Tag="advanced">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE90F;" />
@@ -68,11 +78,6 @@
                 <Grid MaxWidth="640" HorizontalAlignment="Left">
                     <!-- Appearance -->
                     <StackPanel x:Name="PaneAppearance" Spacing="16">
-                        <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="Appearance" />
-                        <TextBlock
-                            Opacity="0.85"
-                            TextWrapping="Wrap"
-                            Text="Choose how Orbit looks on this device." />
                         <ComboBox
                             x:Name="ThemeCombo"
                             HorizontalAlignment="Stretch"
@@ -82,11 +87,10 @@
 
                     <!-- Hermes -->
                     <StackPanel x:Name="PaneHermes" Spacing="16" Visibility="Collapsed">
-                        <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="Hermes" />
                         <TextBlock
                             Opacity="0.85"
                             TextWrapping="Wrap"
-                            Text="One click finds Hermes on this PC, exchanges API keys, installs SOUL/skills/MCP, and verifies the connection." />
+                            Text="Connect Hermes on this PC or point at a remote API." />
 
                         <ComboBox
                             x:Name="HermesModeCombo"
@@ -175,17 +179,16 @@
 
                     <!-- Mail & calendar -->
                     <StackPanel x:Name="PaneMail" Spacing="16" Visibility="Collapsed">
-                        <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="Mail &amp; calendar" />
                         <TextBlock
                             Opacity="0.85"
                             TextWrapping="Wrap"
-                            Text="Push mail from Classic Outlook via Send to Orbit, or Ctrl+Shift+O in Orbit. Optional Graph + ICS below." />
+                            Text="Classic Outlook push, optional Graph sign-in, and ICS calendars." />
 
                         <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Classic Outlook add-in" />
                         <TextBlock
                             Opacity="0.85"
                             TextWrapping="Wrap"
-                            Text="Installs a thin ribbon button that hands mail to Orbit (no Host keys in Outlook). Close Outlook before updating if install reports a file lock." />
+                            Text="Ribbon “Send to Orbit” (close Outlook if install is locked)." />
                         <TextBlock
                             x:Name="OutlookAddInStatusText"
                             Opacity="0.9"
@@ -211,7 +214,7 @@
                         <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Microsoft Graph" />
                         <TextBox
                             x:Name="GraphClientIdBox"
-                            Header="Microsoft Graph client ID (optional)"
+                            Header="Client ID (optional)"
                             PlaceholderText="Entra public-client app ID" />
                         <TextBox
                             x:Name="GraphTenantBox"
@@ -235,14 +238,40 @@
                         <TextBlock x:Name="CalendarStatusText" Opacity="0.85" TextWrapping="Wrap" Visibility="Collapsed" />
                     </StackPanel>
 
-                    <!-- Advanced -->
-                    <StackPanel x:Name="PaneAdvanced" Spacing="16" Visibility="Collapsed">
-                        <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="Advanced" />
+                    <!-- Backup & sync -->
+                    <StackPanel x:Name="PaneBackup" Spacing="16" Visibility="Collapsed">
                         <TextBlock
                             Opacity="0.85"
                             TextWrapping="Wrap"
-                            Text="Host, sync, updates, and developer options." />
+                            Text="Live DB stays on this PC; versioned snapshots go to a synced folder." />
+                        <TextBlock x:Name="OneDrivePathText" TextWrapping="Wrap" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="ChooseBackupFolderButton" Click="ChooseBackupFolderButton_Click" Content="Choose folder…" />
+                            <Button x:Name="ClearBackupFolderButton" Click="ClearBackupFolderButton_Click" Content="Clear" />
+                        </StackPanel>
+                        <TextBlock x:Name="SyncDeviceText" Opacity="0.85" TextWrapping="Wrap" />
+                        <TextBlock x:Name="SyncConflictText" Foreground="{ThemeResource SystemFillColorCriticalBrush}" TextWrapping="Wrap" Visibility="Collapsed" />
+                        <TextBlock x:Name="SyncStatusText" Opacity="0.85" TextWrapping="Wrap" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="SnapshotNowButton" Click="SnapshotNowButton_Click" Content="Backup now" />
+                            <Button x:Name="RefreshSnapshotsButton" Click="RefreshSnapshotsButton_Click" Content="Refresh list" />
+                            <Button x:Name="RestoreSnapshotButton" Click="RestoreSnapshotButton_Click" Content="Restore selected" />
+                        </StackPanel>
+                        <ListView x:Name="SnapshotsList" MaxHeight="180" SelectionMode="Single" />
+                    </StackPanel>
 
+                    <!-- Updates -->
+                    <StackPanel x:Name="PaneUpdates" Spacing="16" Visibility="Collapsed">
+                        <TextBlock x:Name="UpdatesStatusText" Opacity="0.85" TextWrapping="Wrap" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="CheckUpdatesButton" Click="CheckUpdatesButton_Click" Content="Check now" />
+                            <Button x:Name="InstallUpdateButton" Click="InstallUpdateButton_Click" Content="Install update" IsEnabled="False" />
+                        </StackPanel>
+                        <TextBlock x:Name="UpdatesActionText" Opacity="0.85" TextWrapping="Wrap" />
+                    </StackPanel>
+
+                    <!-- Advanced -->
+                    <StackPanel x:Name="PaneAdvanced" Spacing="16" Visibility="Collapsed">
                         <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Hermes install variants" />
                         <StackPanel Orientation="Horizontal" Spacing="8">
                             <Button
@@ -266,33 +295,6 @@
                             Content="Export support bundle"
                             HorizontalAlignment="Left" />
                         <TextBlock x:Name="DiagnosticsActionText" Opacity="0.85" TextWrapping="Wrap" />
-
-                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Sync" />
-                        <TextBox
-                            x:Name="OneDriveBox"
-                            Header="OneDrive snapshot folder"
-                            PlaceholderText="Optional" />
-                        <TextBlock x:Name="SyncConflictText" Foreground="{ThemeResource SystemFillColorCriticalBrush}" TextWrapping="Wrap" Visibility="Collapsed" />
-                        <TextBlock x:Name="SyncStatusText" Opacity="0.85" TextWrapping="Wrap" />
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button x:Name="SnapshotNowButton" Click="SnapshotNowButton_Click" Content="Snapshot now" />
-                            <Button x:Name="RefreshSnapshotsButton" Click="RefreshSnapshotsButton_Click" Content="Refresh list" />
-                            <Button x:Name="RestoreSnapshotButton" Click="RestoreSnapshotButton_Click" Content="Restore selected" />
-                        </StackPanel>
-                        <ListView x:Name="SnapshotsList" MaxHeight="180" SelectionMode="Single" />
-
-                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Updates" />
-                        <TextBlock x:Name="UpdatesStatusText" Opacity="0.85" TextWrapping="Wrap" />
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button x:Name="CheckUpdatesButton" Click="CheckUpdatesButton_Click" Content="Check now" />
-                            <Button x:Name="InstallUpdateButton" Click="InstallUpdateButton_Click" Content="Install update" IsEnabled="False" />
-                        </StackPanel>
-                        <TextBlock x:Name="UpdatesActionText" Opacity="0.85" TextWrapping="Wrap" />
-
-                        <TextBlock
-                            Opacity="0.75"
-                            TextWrapping="Wrap"
-                            Text="Send to Orbit uses Settings → Mail &amp; calendar → Classic Outlook add-in (thin launcher). Do not register the old ingest COM add-in." />
 
                         <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Developer" />
                         <ToggleSwitch

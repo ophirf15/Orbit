@@ -514,7 +514,7 @@ public sealed partial class ProjectCellControl : UserControl
 
             var archive = new MenuFlyoutItem { Text = "Archive project…" };
             archive.Click += (_, _) => ArchiveProjectRequested?.Invoke(this, _cell);
-            var merge = new MenuFlyoutItem { Text = "Merge project into…" };
+            var merge = new MenuFlyoutItem { Text = "This is the wrong project…" };
             merge.Click += (_, _) => MergeProjectRequested?.Invoke(this, _cell);
             var setHome = new MenuFlyoutItem { Text = "Set home folder…" };
             setHome.Click += (_, _) => SetHomeFolderRequested?.Invoke(this, _cell);

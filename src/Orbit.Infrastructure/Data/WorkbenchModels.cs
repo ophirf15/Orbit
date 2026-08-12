@@ -181,6 +181,9 @@ public sealed class ContextBlockerRecord
     public required string Status { get; init; }
 
     public string? TaskId { get; init; }
+
+    /// <summary>ISO timestamp from blockers.created_at (already on graph; no migration).</summary>
+    public string? CreatedAt { get; init; }
 }
 
 public sealed class ContextContactRecord

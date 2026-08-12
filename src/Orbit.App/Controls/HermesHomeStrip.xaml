@@ -8,13 +8,14 @@
     mc:Ignorable="d">
 
     <Border
-        Padding="14,12"
+        Padding="12,10"
         Background="{ThemeResource OrbitDetailSurfaceBrush}"
         BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
         BorderThickness="1"
         CornerRadius="{StaticResource ControlCornerRadius}">
-        <Grid RowSpacing="10">
+        <Grid RowSpacing="8">
             <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
@@ -25,30 +26,20 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <StackPanel Spacing="4">
+                <StackPanel Spacing="2">
                     <TextBlock
+                        x:Name="CompactHeaderText"
                         FontWeight="SemiBold"
-                        Opacity="0.85"
-                        Text="From Hermes" />
-                    <TextBlock
-                        x:Name="DayBriefText"
-                        LineHeight="20"
-                        MaxLines="4"
-                        Text="Loading…"
+                        Text="Hermes"
                         TextTrimming="CharacterEllipsis"
-                        TextWrapping="Wrap" />
-                    <TextBlock
-                        x:Name="HermesHintText"
-                        Opacity="0.55"
-                        Style="{StaticResource CaptionTextBlockStyle}"
-                        TextWrapping="Wrap"
-                        Visibility="Collapsed" />
+                        TextWrapping="NoWrap" />
                     <TextBlock
                         x:Name="ActivityText"
                         Opacity="0.7"
                         Style="{StaticResource CaptionTextBlockStyle}"
                         Text=""
-                        TextWrapping="Wrap" />
+                        TextTrimming="CharacterEllipsis"
+                        TextWrapping="NoWrap" />
                 </StackPanel>
                 <Button
                     x:Name="RefreshButton"
@@ -64,16 +55,45 @@
                 </Button>
             </Grid>
 
+            <Expander
+                x:Name="BriefExpander"
+                Grid.Row="1"
+                HorizontalAlignment="Stretch"
+                HorizontalContentAlignment="Stretch"
+                IsExpanded="False">
+                <Expander.Header>
+                    <TextBlock
+                        x:Name="BriefHeaderText"
+                        Opacity="0.85"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Text="Show brief" />
+                </Expander.Header>
+                <StackPanel Spacing="4" Padding="0,4,0,0">
+                    <TextBlock
+                        x:Name="DayBriefText"
+                        LineHeight="20"
+                        Text="Loading…"
+                        TextWrapping="Wrap" />
+                    <TextBlock
+                        x:Name="HermesHintText"
+                        Opacity="0.55"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        TextWrapping="Wrap"
+                        Visibility="Collapsed" />
+                </StackPanel>
+            </Expander>
+
             <TextBlock
                 x:Name="ConcernsHeader"
-                Grid.Row="1"
+                Grid.Row="2"
                 FontWeight="SemiBold"
                 Opacity="0.85"
-                Text="Needs you now" />
+                Text="Needs you now"
+                Visibility="Collapsed" />
 
             <ScrollViewer
-                Grid.Row="2"
-                MaxHeight="140"
+                Grid.Row="3"
+                MaxHeight="128"
                 HorizontalScrollBarVisibility="Auto"
                 HorizontalScrollMode="Enabled"
                 VerticalScrollBarVisibility="Disabled"
@@ -86,21 +106,28 @@
                         <DataTemplate>
                             <Button
                                 MinWidth="180"
-                                MaxWidth="260"
-                                Padding="12,10"
+                                MaxWidth="280"
+                                Padding="10,8"
                                 Click="ConcernChip_Click"
                                 HorizontalContentAlignment="Left"
-                                Tag="{Binding TaskId}">
+                                Tag="{Binding TaskId}"
+                                ToolTipService.ToolTip="{Binding ReasonLabel}">
                                 <StackPanel Spacing="2">
                                     <TextBlock
                                         FontWeight="SemiBold"
-                                        Text="{Binding Title}"
+                                        Text="{Binding ContextLine}"
                                         TextTrimming="CharacterEllipsis"
                                         TextWrapping="NoWrap" />
                                     <TextBlock
-                                        Opacity="0.7"
+                                        Opacity="0.85"
                                         Style="{StaticResource CaptionTextBlockStyle}"
-                                        Text="{Binding SubtitleLine}"
+                                        Text="{Binding ActionLine}"
+                                        TextTrimming="CharacterEllipsis"
+                                        TextWrapping="NoWrap" />
+                                    <TextBlock
+                                        Opacity="0.65"
+                                        Style="{StaticResource CaptionTextBlockStyle}"
+                                        Text="{Binding ReasonLabel}"
                                         TextTrimming="CharacterEllipsis"
                                         TextWrapping="NoWrap" />
                                 </StackPanel>

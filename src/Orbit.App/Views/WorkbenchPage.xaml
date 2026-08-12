@@ -55,7 +55,7 @@
                             x:Name="AddTaskButton"
                             Click="AddTask_Click"
                             Content="Add task"
-                            IsEnabled="False" />
+                            IsEnabled="True" />
                         <Button
                             x:Name="AddSubtaskButton"
                             Click="AddSubtask_Click"
@@ -142,22 +142,29 @@
                             <TreeView.ItemTemplate>
                                 <DataTemplate x:DataType="vm:OrbitTreeNodeVm">
                                     <TreeViewItem
+                                        AllowDrop="True"
+                                        CanDrag="True"
                                         IsExpanded="True"
                                         ItemsSource="{x:Bind Children}"
                                         CollapsedGlyph="&#xE76C;"
                                         ExpandedGlyph="&#xE70D;"
-                                        ContextRequested="OrbitTreeItem_ContextRequested">
-                                        <StackPanel Orientation="Horizontal" Spacing="8">
-                                            <FontIcon FontSize="12" Glyph="{x:Bind Glyph}" Opacity="0.75" />
+                                        ContextRequested="OrbitTreeItem_ContextRequested"
+                                        DragOver="OrbitTreeItem_DragOver"
+                                        Drop="OrbitTreeItem_Drop">
+                                        <StackPanel
+                                            Orientation="Horizontal"
+                                            Spacing="8"
+                                            ToolTipService.ToolTip="{x:Bind ToolTipText, Mode=OneWay}">
+                                            <FontIcon FontSize="12" Glyph="{x:Bind Glyph, Mode=OneWay}" Opacity="0.75" />
                                             <StackPanel Spacing="1">
                                                 <TextBlock
                                                     FontWeight="SemiBold"
-                                                    Text="{x:Bind Title}"
+                                                    Text="{x:Bind Title, Mode=OneWay}"
                                                     TextTrimming="CharacterEllipsis" />
                                                 <TextBlock
                                                     Opacity="0.65"
                                                     Style="{StaticResource CaptionTextBlockStyle}"
-                                                    Text="{x:Bind Subtitle}"
+                                                    Text="{x:Bind Subtitle, Mode=OneWay}"
                                                     TextTrimming="CharacterEllipsis" />
                                             </StackPanel>
                                         </StackPanel>
@@ -169,10 +176,10 @@
                             x:Name="AgentInputBox"
                             Grid.Row="2"
                             AcceptsReturn="False"
-                            AutomationProperties.Name="Quick capture"
+                            AutomationProperties.Name="Ask, capture, or command Orbit"
                             CornerRadius="10"
                             KeyDown="AgentInputBox_KeyDown"
-                            PlaceholderText="Capture here · ? ask Hermes · new project …"
+                            PlaceholderText="Ask, capture, or command Orbit…"
                             MinHeight="40" />
                         <TextBlock
                             x:Name="AgentQuickReply"

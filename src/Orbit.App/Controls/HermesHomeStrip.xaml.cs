@@ -13,6 +13,8 @@ public sealed partial class HermesHomeStrip : UserControl
     public HermesHomeStrip()
     {
         InitializeComponent();
+        BriefExpander.Expanding += (_, _) => SetBriefHeader(expanded: true);
+        BriefExpander.Collapsed += (_, _) => SetBriefHeader(expanded: false);
     }
 
     public void SetBusy(bool busy) => RefreshButton.IsEnabled = !busy;
@@ -21,10 +23,13 @@ public sealed partial class HermesHomeStrip : UserControl
     {
         if (pulse is null)
         {
+            CompactHeaderText.Text = "Hermes · pulse unavailable";
             DayBriefText.Text = "Could not load pulse from Core Host.";
             HermesHintText.Visibility = Visibility.Collapsed;
             ActivityText.Text = string.Empty;
-            ConcernsHeader.Text = "Needs you now";
+            BriefExpander.IsExpanded = false;
+            SetBriefHeader(expanded: false);
+            ConcernsHeader.Visibility = Visibility.Collapsed;
             ConcernsRepeater.ItemsSource = Array.Empty<PulseConcernVm>();
             return;
         }
@@ -45,11 +50,20 @@ public sealed partial class HermesHomeStrip : UserControl
 
         ActivityText.Text = FormatActivity(pulse);
         var concerns = pulse.Concerns?.ToList() ?? [];
-        ConcernsHeader.Text = concerns.Count == 0
-            ? "Needs you now"
-            : $"Needs you now · {concerns.Count}";
+        CompactHeaderText.Text = FormatAttentionHeader(concerns.Count);
+        ConcernsHeader.Visibility = concerns.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         ConcernsRepeater.ItemsSource = concerns;
     }
+
+    private static string FormatAttentionHeader(int count) => count switch
+    {
+        0 => "Hermes · Nothing needs you now",
+        1 => "Hermes · 1 item needs attention",
+        _ => $"Hermes · {count} items need attention",
+    };
+
+    private void SetBriefHeader(bool expanded) =>
+        BriefHeaderText.Text = expanded ? "Hide brief" : "Show brief";
 
     private static string FormatActivity(PulseVm pulse)
     {

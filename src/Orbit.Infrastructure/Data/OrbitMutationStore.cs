@@ -463,6 +463,7 @@ public sealed class OrbitMutationStore
             "project" or EntityTypes.Project => ("projects", EntityTypes.Project, "project.archived"),
             "task" or EntityTypes.Task => ("tasks", EntityTypes.Task, "task.archived"),
             "note" or EntityTypes.Note => ("notes", EntityTypes.Note, "note.archived"),
+            "blocker" or EntityTypes.Blocker => ("blockers", EntityTypes.Blocker, "blocker.archived"),
             _ => throw new ArgumentException($"Unsupported archive entity type '{entityType}'.", nameof(entityType)),
         };
 

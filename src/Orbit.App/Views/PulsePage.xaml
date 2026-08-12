@@ -284,12 +284,17 @@
                                     <StackPanel Grid.Column="1" Spacing="4">
                                         <TextBlock
                                             Style="{StaticResource BodyStrongTextBlockStyle}"
-                                            Text="{Binding Title}"
+                                            Text="{Binding ContextLine}"
                                             TextWrapping="Wrap" />
                                         <TextBlock
-                                            Opacity="0.75"
+                                            Opacity="0.85"
                                             Style="{StaticResource CaptionTextBlockStyle}"
-                                            Text="{Binding SubtitleLine}" />
+                                            Text="{Binding ActionLine}"
+                                            TextWrapping="Wrap" />
+                                        <TextBlock
+                                            Opacity="0.7"
+                                            Style="{StaticResource CaptionTextBlockStyle}"
+                                            Text="{Binding ReasonLabel}" />
                                         <TextBlock
                                             Opacity="0.6"
                                             Style="{StaticResource CaptionTextBlockStyle}"

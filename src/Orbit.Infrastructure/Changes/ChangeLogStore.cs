@@ -72,6 +72,35 @@ public sealed class ChangeLogStore
         cmd.Parameters.AddWithValue("$cursor", cursor);
         cmd.Parameters.AddWithValue("$limit", take);
 
+        var list = ReadEntries(cmd);
+        var next = list.Count == 0 ? cursor : list[^1].Revision;
+        return (list, next);
+    }
+
+    /// <summary>Newest-first change log rows for one entity (uses idx_orbit_change_log_entity).</summary>
+    public IReadOnlyList<ChangeLogEntry> ListForEntity(string entityType, string entityId, int limit = 100)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(entityType);
+        ArgumentException.ThrowIfNullOrWhiteSpace(entityId);
+        var take = Math.Clamp(limit, 1, 300);
+        using var connection = _factory.CreateConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            """
+            SELECT revision, entity_type, entity_id, change_kind, source_event, tombstone, changed_fields_json, created_at
+            FROM orbit_change_log
+            WHERE entity_type = $type AND entity_id = $id
+            ORDER BY revision DESC
+            LIMIT $limit;
+            """;
+        cmd.Parameters.AddWithValue("$type", entityType.Trim());
+        cmd.Parameters.AddWithValue("$id", entityId.Trim());
+        cmd.Parameters.AddWithValue("$limit", take);
+        return ReadEntries(cmd);
+    }
+
+    private static List<ChangeLogEntry> ReadEntries(SqliteCommand cmd)
+    {
         var list = new List<ChangeLogEntry>();
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
@@ -89,8 +118,7 @@ public sealed class ChangeLogStore
             });
         }
 
-        var next = list.Count == 0 ? cursor : list[^1].Revision;
-        return (list, next);
+        return list;
     }
 
     public long CurrentCursor()

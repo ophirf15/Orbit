@@ -210,6 +210,7 @@ public sealed class JsonOrbitSettingsStore : IOrbitSettingsStore
             LocalDataRoot = settings.LocalDataRoot,
             GeneratedFilesRoot = settings.GeneratedFilesRoot,
             OneDriveSnapshotFolder = settings.OneDriveSnapshotFolder,
+            SkipEmptyBackupContinue = settings.SkipEmptyBackupContinue,
             DeviceId = settings.DeviceId,
             DeviceName = settings.DeviceName,
             HermesBaseUrl = settings.HermesBaseUrl,

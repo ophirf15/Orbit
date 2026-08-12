@@ -133,6 +133,9 @@ public static class SyncEndpoints
         latestCloudSnapshotId = s.LatestCloudSnapshotId,
         localDirty = s.LocalDirty,
         lastSnapshotAt = s.LastSnapshotAt,
+        deviceId = s.DeviceId,
+        continueFromBackupAvailable = s.ContinueFromBackupAvailable,
+        autoBackupHint = s.AutoBackupHint,
         conflict = s.Conflict is null
             ? null
             : new

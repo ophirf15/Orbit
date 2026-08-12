@@ -8,6 +8,7 @@ using Microsoft.UI.Xaml.Shapes;
 using Orbit.Agent.Contracts.Hermes;
 using Orbit.Core.Agent;
 using Orbit.Core.Settings;
+using Orbit.Core.Workbench;
 using Orbit.Infrastructure.Hermes;
 using Orbit_App.Services;
 using Orbit_App.ViewModels;
@@ -18,6 +19,14 @@ namespace Orbit_App.Controls;
 
 public sealed partial class WorkbenchDetailPanel : UserControl
 {
+    private const int TabOverview = 0;
+    private const int TabConversation = 1;
+    private const int TabNotes = 2;
+    private const int TabFiles = 3;
+    private const int TabPeople = 4;
+    private const int TabHistory = 5;
+    private const int TabMore = 6;
+
     private static readonly ConcurrentDictionary<string, AgentSessionState> Sessions = new(StringComparer.Ordinal);
 
     private static readonly HashSet<string> RelationshipSuggestionTypes = new(StringComparer.Ordinal)
@@ -56,6 +65,9 @@ public sealed partial class WorkbenchDetailPanel : UserControl
     private List<HermesChatMessage> _agentHistory = [];
     private string _agentTranscriptText = string.Empty;
     private bool _agentBusy;
+    private int _historyLoadGeneration;
+    private IReadOnlyList<TaskTimelineLine> _timelineLines = [];
+    private StackPanel? _overviewRecentHost;
 
     private sealed class AgentSessionState
     {
@@ -178,16 +190,18 @@ public sealed partial class WorkbenchDetailPanel : UserControl
             ProjectLabel.Text = "Limbo";
             TitleBox.Text = TruncateTitle(_limboNote.OriginalText);
             DeleteTaskButton.Visibility = Visibility.Collapsed;
+            ResetTitleShortenUi(showSuggest: false);
             ArchiveButton.Visibility = Visibility.Visible;
             BackButton.Visibility = Visibility.Visible;
             BackButton.SetValue(ToolTipService.ToolTipProperty, "Close");
-            DetailTabs.SelectedIndex = 0;
+            DetailTabs.SelectedIndex = TabOverview;
             BuildOverview();
             BuildNotes();
             LinksHost.Children.Clear();
             ContactsHost.Children.Clear();
             FilesHost.Children.Clear();
             FieldsHost.Children.Clear();
+            ClearHistoryPlaceholder("History is for tasks.");
             RestoreOrSeedAgentSession();
             FooterHint.Text = "Limbo brief";
         }
@@ -255,6 +269,7 @@ public sealed partial class WorkbenchDetailPanel : UserControl
 
                 TitleBox.Text = _task.Title;
                 DeleteTaskButton.Visibility = Visibility.Visible;
+                ResetTitleShortenUi(showSuggest: true);
                 ArchiveButton.Visibility = Visibility.Visible;
                 ArchiveProjectButton.Visibility = Visibility.Collapsed;
                 MergeProjectButton.Visibility = Visibility.Collapsed;
@@ -271,6 +286,7 @@ public sealed partial class WorkbenchDetailPanel : UserControl
             {
                 TitleBox.Text = _context.Name;
                 DeleteTaskButton.Visibility = Visibility.Collapsed;
+                ResetTitleShortenUi(showSuggest: false);
                 ArchiveButton.Visibility = Visibility.Collapsed;
                 ArchiveProjectButton.Visibility = Visibility.Visible;
                 MergeProjectButton.Visibility = Visibility.Visible;
@@ -279,15 +295,36 @@ public sealed partial class WorkbenchDetailPanel : UserControl
                 OrbitRuntimeContextProvider.Instance.SetFocus(projectId, _context.Name);
             }
 
-            DetailTabs.SelectedIndex = 0;
+            DetailTabs.SelectedIndex = TabOverview;
+            // Waiting-on summary needs links before Overview paints (execution hierarchy).
+            if (!string.IsNullOrWhiteSpace(taskId))
+            {
+                _links = await client.GetTaskDependenciesAsync(taskId);
+            }
+            else
+            {
+                _links = null;
+            }
+
             BuildOverview();
             BuildNotes();
+            RestoreOrSeedAgentSession();
+            FooterHint.Text = string.IsNullOrWhiteSpace(taskId) ? "Project detail" : "Task overview";
+
+            // History is async — never block selection / Overview.
+            if (!string.IsNullOrWhiteSpace(taskId))
+            {
+                _ = LoadHistoryAsync(taskId);
+            }
+            else
+            {
+                ClearHistoryPlaceholder("Select a task to see history.");
+            }
+
             await BuildLinksAsync(client);
             BuildContacts();
             BuildFiles();
             await BuildFieldsAsync(client);
-            RestoreOrSeedAgentSession();
-            FooterHint.Text = string.IsNullOrWhiteSpace(taskId) ? "Project detail" : "Task brief";
         }
         catch (Exception)
         {
@@ -334,6 +371,7 @@ public sealed partial class WorkbenchDetailPanel : UserControl
     private void BuildOverview()
     {
         OverviewHost.Children.Clear();
+        _overviewRecentHost = null;
 
         if (_limboNote is not null)
         {
@@ -356,23 +394,7 @@ public sealed partial class WorkbenchDetailPanel : UserControl
 
         if (_task is not null)
         {
-            if (!string.IsNullOrWhiteSpace(_task.SourceLine))
-            {
-                OverviewHost.Children.Add(Label("Source"));
-                OverviewHost.Children.Add(BodyText(_task.SourceLine!));
-            }
-
-            OverviewHost.Children.Add(Label("Brief"));
-            var briefBox = SoftTextBox("Living brief — what this is about…", minHeight: 140, acceptsReturn: true);
-            briefBox.Text = _task.Body ?? string.Empty;
-            briefBox.Tag = briefBox.Text;
-            briefBox.LostFocus += async (_, _) =>
-            {
-                await SaveTaskBodyAsync(briefBox.Text);
-                briefBox.Tag = briefBox.Text ?? string.Empty;
-            };
-            OverviewHost.Children.Add(briefBox);
-
+            // Execution hierarchy: next move → state → blocker → waiting → due → brief last.
             OverviewHost.Children.Add(Label("Next move"));
             var nextBox = SoftTextBox("What should happen next?", minHeight: 0, acceptsReturn: false);
             nextBox.Text = _task.NextAction ?? string.Empty;
@@ -388,21 +410,6 @@ public sealed partial class WorkbenchDetailPanel : UserControl
                 }
             };
             OverviewHost.Children.Add(nextBox);
-
-            if (!string.IsNullOrWhiteSpace(_primaryEmailId))
-            {
-                var openMail = SoftAccentButton("Open original email");
-                openMail.HorizontalAlignment = HorizontalAlignment.Stretch;
-                var emailId = _primaryEmailId!;
-                openMail.Click += async (_, _) =>
-                {
-                    using var openClient = new CoreHostClient(App.Settings, App.SettingsStore);
-                    FooterHint.Text = await openClient.OpenEmailInOutlookAsync(emailId)
-                        ? "Opened in Outlook."
-                        : "Could not open email.";
-                };
-                OverviewHost.Children.Add(openMail);
-            }
 
             OverviewHost.Children.Add(Label("Status"));
             var combo = SoftCombo();
@@ -435,6 +442,12 @@ public sealed partial class WorkbenchDetailPanel : UserControl
             };
             OverviewHost.Children.Add(combo);
 
+            OverviewHost.Children.Add(Label("Blockers"));
+            AddBlockerOverviewSection(taskScoped: true);
+
+            OverviewHost.Children.Add(Label("Waiting on"));
+            AddWaitingOnOverviewSection();
+
             OverviewHost.Children.Add(Label("Due"));
             var dueBox = SoftTextBox("YYYY-MM-DD or ISO datetime…");
             dueBox.Text = _task.DueAt ?? string.Empty;
@@ -464,50 +477,47 @@ public sealed partial class WorkbenchDetailPanel : UserControl
             };
             OverviewHost.Children.Add(dueBox);
 
-            OverviewHost.Children.Add(Label("Blockers"));
-            if (_context?.Blockers.Count > 0)
+            if (!string.IsNullOrWhiteSpace(_primaryEmailId))
             {
-                foreach (var b in _context.Blockers)
+                var openMail = SoftAccentButton("Open original email");
+                openMail.HorizontalAlignment = HorizontalAlignment.Stretch;
+                var emailId = _primaryEmailId!;
+                openMail.Click += async (_, _) =>
                 {
-                    OverviewHost.Children.Add(BodyText(b));
-                }
-            }
-            else
-            {
-                OverviewHost.Children.Add(BodyText("None open."));
+                    using var openClient = new CoreHostClient(App.Settings, App.SettingsStore);
+                    FooterHint.Text = await openClient.OpenEmailInOutlookAsync(emailId)
+                        ? "Opened in Outlook."
+                        : "Could not open email.";
+                };
+                OverviewHost.Children.Add(openMail);
             }
 
-            var blockerBox = SoftTextBox("Add blocker summary…");
-            var addBlocker = SoftSubtleButton("Set blocker");
-            addBlocker.Click += async (_, _) =>
+            if (!string.IsNullOrWhiteSpace(_task.SourceLine))
             {
-                var summary = blockerBox.Text?.Trim();
-                if (string.IsNullOrWhiteSpace(summary) || _taskId is null)
-                {
-                    return;
-                }
+                OverviewHost.Children.Add(Label("Source"));
+                OverviewHost.Children.Add(BodyText(_task.SourceLine!));
+            }
 
-                using var client = new CoreHostClient(App.Settings, App.SettingsStore);
-                if (await client.SetBlockerAsync(summary, projectId: _projectId, taskId: _taskId))
-                {
-                    await client.UpdateTaskAsync(_taskId, status: "blocked");
-                    blockerBox.Text = string.Empty;
-                    FooterHint.Text = "Blocker set.";
-                    ContentChanged?.Invoke(this, EventArgs.Empty);
-                    if (_projectId is not null)
-                    {
-                        await LoadTaskAsync(_projectId, _taskId);
-                    }
-                }
+            OverviewHost.Children.Add(Label("Brief"));
+            var briefBox = SoftTextBox("Living brief — what this is about…", minHeight: 140, acceptsReturn: true);
+            briefBox.Text = _task.Body ?? string.Empty;
+            briefBox.Tag = briefBox.Text;
+            briefBox.LostFocus += async (_, _) =>
+            {
+                await SaveTaskBodyAsync(briefBox.Text);
+                briefBox.Tag = briefBox.Text ?? string.Empty;
             };
-            OverviewHost.Children.Add(blockerBox);
-            OverviewHost.Children.Add(addBlocker);
+            OverviewHost.Children.Add(briefBox);
 
-            var openAgent = SoftSubtleButton("Open Agent");
+            _overviewRecentHost = new StackPanel { Spacing = 6 };
+            OverviewHost.Children.Add(_overviewRecentHost);
+            RenderOverviewRecent(loading: true);
+
+            var openAgent = SoftSubtleButton("Open Conversation");
             openAgent.HorizontalAlignment = HorizontalAlignment.Stretch;
             openAgent.Click += (_, _) =>
             {
-                DetailTabs.SelectedIndex = 1;
+                DetailTabs.SelectedIndex = TabConversation;
                 AgentInput.Focus(FocusState.Programmatic);
             };
             OverviewHost.Children.Add(openAgent);
@@ -544,49 +554,453 @@ public sealed partial class WorkbenchDetailPanel : UserControl
             }
 
             OverviewHost.Children.Add(Label("Blockers"));
-            if (_context.Blockers.Count > 0)
-            {
-                foreach (var b in _context.Blockers)
-                {
-                    OverviewHost.Children.Add(BodyText(b));
-                }
-            }
-            else
-            {
-                OverviewHost.Children.Add(BodyText("None open."));
-            }
+            AddBlockerOverviewSection(taskScoped: false);
 
-            var projectBlockerBox = SoftTextBox("Add project blocker…");
-            var addProjectBlocker = SoftSubtleButton("Set blocker");
-            addProjectBlocker.Click += async (_, _) =>
-            {
-                var summary = projectBlockerBox.Text?.Trim();
-                if (string.IsNullOrWhiteSpace(summary) || _projectId is null)
-                {
-                    return;
-                }
-
-                using var client = new CoreHostClient(App.Settings, App.SettingsStore);
-                if (await client.SetBlockerAsync(summary, projectId: _projectId))
-                {
-                    projectBlockerBox.Text = string.Empty;
-                    FooterHint.Text = "Blocker set.";
-                    ContentChanged?.Invoke(this, EventArgs.Empty);
-                    await LoadProjectAsync(_projectId);
-                }
-            };
-            OverviewHost.Children.Add(projectBlockerBox);
-            OverviewHost.Children.Add(addProjectBlocker);
-
-            var openAgent = SoftSubtleButton("Open Agent");
+            var openAgent = SoftSubtleButton("Open Conversation");
             openAgent.HorizontalAlignment = HorizontalAlignment.Stretch;
             openAgent.Click += (_, _) =>
             {
-                DetailTabs.SelectedIndex = 1;
+                DetailTabs.SelectedIndex = TabConversation;
                 AgentInput.Focus(FocusState.Programmatic);
             };
             OverviewHost.Children.Add(openAgent);
         }
+    }
+
+    private async Task LoadHistoryAsync(string taskId)
+    {
+        var gen = ++_historyLoadGeneration;
+        _timelineLines = [];
+        HistoryHost.Children.Clear();
+        HistoryHost.Children.Add(BodyText("Loading history…"));
+        RenderOverviewRecent(loading: true);
+
+        try
+        {
+            using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+            var lines = await client.GetTaskHistoryAsync(taskId);
+            if (gen != _historyLoadGeneration)
+            {
+                return;
+            }
+
+            _timelineLines = lines;
+            RenderHistoryTab(lines);
+            RenderOverviewRecent(loading: false);
+        }
+        catch
+        {
+            if (gen != _historyLoadGeneration)
+            {
+                return;
+            }
+
+            HistoryHost.Children.Clear();
+            HistoryHost.Children.Add(BodyText("Could not load history."));
+            RenderOverviewRecent(loading: false, failed: true);
+        }
+    }
+
+    private void ClearHistoryPlaceholder(string message)
+    {
+        _historyLoadGeneration++;
+        _timelineLines = [];
+        _overviewRecentHost = null;
+        HistoryHost.Children.Clear();
+        HistoryHost.Children.Add(BodyText(message));
+    }
+
+    private void RenderHistoryTab(IReadOnlyList<TaskTimelineLine> lines)
+    {
+        HistoryHost.Children.Clear();
+        HistoryHost.Children.Add(Label("What happened"));
+        if (lines.Count == 0)
+        {
+            HistoryHost.Children.Add(BodyText("No history yet for this task."));
+            return;
+        }
+
+        foreach (var line in lines)
+        {
+            HistoryHost.Children.Add(BuildTimelineRow(line));
+        }
+    }
+
+    private void RenderOverviewRecent(bool loading, bool failed = false)
+    {
+        if (_overviewRecentHost is null || _task is null)
+        {
+            return;
+        }
+
+        _overviewRecentHost.Children.Clear();
+        _overviewRecentHost.Children.Add(Label("Recent"));
+
+        if (loading && _timelineLines.Count == 0)
+        {
+            _overviewRecentHost.Children.Add(BodyText("Loading history…"));
+            return;
+        }
+
+        if (failed && _timelineLines.Count == 0)
+        {
+            _overviewRecentHost.Children.Add(BodyText("History unavailable."));
+            return;
+        }
+
+        var recent = TaskTimelineMapper.TakeRecent(_timelineLines, 3);
+        if (recent.Count == 0)
+        {
+            _overviewRecentHost.Children.Add(BodyText("No recent activity yet."));
+        }
+        else
+        {
+            foreach (var line in recent)
+            {
+                _overviewRecentHost.Children.Add(BuildTimelineRow(line));
+            }
+        }
+
+        var seeHistory = SoftSubtleButton("See history");
+        seeHistory.HorizontalAlignment = HorizontalAlignment.Stretch;
+        seeHistory.Click += (_, _) => DetailTabs.SelectedIndex = TabHistory;
+        _overviewRecentHost.Children.Add(seeHistory);
+    }
+
+    private static UIElement BuildTimelineRow(TaskTimelineLine line)
+    {
+        var row = new Grid { ColumnSpacing = 10, Margin = new Thickness(0, 0, 0, 2) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(64) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var when = new TextBlock
+        {
+            Text = string.IsNullOrWhiteSpace(line.WhenLabel) ? "—" : line.WhenLabel,
+            FontSize = 11,
+            Opacity = 0.65,
+            VerticalAlignment = VerticalAlignment.Top,
+        };
+        Grid.SetColumn(when, 0);
+        row.Children.Add(when);
+
+        var text = new TextBlock
+        {
+            Text = line.Text,
+            FontSize = 12,
+            TextWrapping = TextWrapping.WrapWholeWords,
+            VerticalAlignment = VerticalAlignment.Top,
+        };
+        Grid.SetColumn(text, 1);
+        row.Children.Add(text);
+        return row;
+    }
+
+    private void AddBlockerOverviewSection(bool taskScoped)
+    {
+        var blockers = (_context?.Blockers ?? [])
+            .Where(b =>
+            {
+                if (!taskScoped || _taskId is null)
+                {
+                    return true;
+                }
+
+                return string.IsNullOrWhiteSpace(b.TaskId)
+                       || string.Equals(b.TaskId, _taskId, StringComparison.Ordinal);
+            })
+            .ToList();
+
+        if (blockers.Count == 0)
+        {
+            OverviewHost.Children.Add(BodyText(
+                taskScoped
+                    ? "No open blocker on this task. Add one when something outside this work is stopping progress."
+                    : "No open project blockers. Add one when the whole project is stuck."));
+        }
+        else
+        {
+            foreach (var blocker in blockers)
+            {
+                OverviewHost.Children.Add(BuildBlockerRow(blocker, taskScoped));
+            }
+        }
+
+        var placeholder = taskScoped ? "What’s blocking this task…" : "Add project blocker…";
+        var blockerBox = SoftTextBox(placeholder);
+        var addBlocker = SoftSubtleButton("Set blocker");
+        addBlocker.Click += async (_, _) =>
+        {
+            var summary = blockerBox.Text?.Trim();
+            if (string.IsNullOrWhiteSpace(summary) || _projectId is null)
+            {
+                return;
+            }
+
+            using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+            var ok = taskScoped && _taskId is not null
+                ? await client.SetBlockerAsync(summary, projectId: _projectId, taskId: _taskId)
+                : await client.SetBlockerAsync(summary, projectId: _projectId);
+            if (!ok)
+            {
+                FooterHint.Text = "Could not set blocker.";
+                return;
+            }
+
+            if (taskScoped && _taskId is not null)
+            {
+                await client.UpdateTaskAsync(_taskId, status: "blocked");
+            }
+
+            blockerBox.Text = string.Empty;
+            FooterHint.Text = "Blocker set.";
+            ContentChanged?.Invoke(this, EventArgs.Empty);
+            if (taskScoped && _taskId is not null)
+            {
+                await LoadTaskAsync(_projectId, _taskId);
+            }
+            else
+            {
+                await LoadProjectAsync(_projectId);
+            }
+        };
+        OverviewHost.Children.Add(blockerBox);
+        OverviewHost.Children.Add(addBlocker);
+    }
+
+    private UIElement BuildBlockerRow(ContextBlockerVm blocker, bool taskScoped)
+    {
+        var row = new StackPanel { Spacing = 2, Margin = new Thickness(0, 0, 0, 6) };
+        var summary = string.IsNullOrWhiteSpace(blocker.Summary) ? "(blocker)" : blocker.Summary;
+        row.Children.Add(BodyText(summary));
+
+        var metaParts = new List<string>();
+        var since = OperationalSinceFormatter.FormatSince(blocker.CreatedAt);
+        if (!string.IsNullOrWhiteSpace(since))
+        {
+            metaParts.Add(since!);
+        }
+
+        if (!string.IsNullOrWhiteSpace(blocker.Status)
+            && !string.Equals(blocker.Status, "open", StringComparison.OrdinalIgnoreCase))
+        {
+            metaParts.Add(blocker.Status);
+        }
+
+        if (metaParts.Count > 0)
+        {
+            row.Children.Add(new TextBlock
+            {
+                Text = string.Join(" · ", metaParts),
+                FontSize = 11,
+                Opacity = 0.7,
+            });
+        }
+
+        if (!string.IsNullOrWhiteSpace(blocker.Id))
+        {
+            var clear = SoftSubtleButton("Clear blocker");
+            clear.HorizontalAlignment = HorizontalAlignment.Left;
+            var blockerId = blocker.Id;
+            clear.Click += async (_, _) =>
+            {
+                using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+                if (!await client.ArchiveEntityAsync("blocker", blockerId))
+                {
+                    FooterHint.Text = "Could not clear blocker.";
+                    return;
+                }
+
+                FooterHint.Text = "Blocker cleared.";
+                if (taskScoped && _taskId is not null
+                    && string.Equals(_task?.Status, "blocked", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Clearing the operational blocker should return the task to Active.
+                    if (await client.UpdateTaskAsync(_taskId, status: "active"))
+                    {
+                        _task!.Status = "active";
+                    }
+                }
+
+                ContentChanged?.Invoke(this, EventArgs.Empty);
+                if (_projectId is null)
+                {
+                    return;
+                }
+
+                if (taskScoped && _taskId is not null)
+                {
+                    await LoadTaskAsync(_projectId, _taskId);
+                }
+                else
+                {
+                    await LoadProjectAsync(_projectId);
+                }
+            };
+            row.Children.Add(clear);
+        }
+
+        return row;
+    }
+
+    private void AddWaitingOnOverviewSection()
+    {
+        if (_links?.WaitingOn.Count > 0)
+        {
+            foreach (var link in _links.WaitingOn.Take(6))
+            {
+                OverviewHost.Children.Add(BuildWaitingOnOverviewRow(link));
+            }
+
+            OverviewHost.Children.Add(BodyText("See More → Links to open, unlink, or add more dependencies."));
+            return;
+        }
+
+        OverviewHost.Children.Add(BodyText(
+            "Not waiting on another task. Use More → Links when this work depends on an upstream finish."));
+    }
+
+    private UIElement BuildWaitingOnOverviewRow(TaskLinkVm link)
+    {
+        var row = new StackPanel { Spacing = 2, Margin = new Thickness(0, 0, 0, 6) };
+        var title = string.IsNullOrWhiteSpace(link.Title) ? "(untitled task)" : link.Title;
+        var head = link.Satisfied ? $"✓ Waiting on {title}" : $"Waiting on {title}";
+        row.Children.Add(BodyText(head));
+
+        var detailParts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(link.Expects))
+        {
+            detailParts.Add($"needs {link.Expects}");
+        }
+        else if (!string.IsNullOrWhiteSpace(link.Status))
+        {
+            detailParts.Add(link.Status!);
+        }
+
+        var since = OperationalSinceFormatter.FormatSince(link.CreatedAt);
+        if (!string.IsNullOrWhiteSpace(since))
+        {
+            detailParts.Add(since!);
+        }
+
+        if (detailParts.Count > 0)
+        {
+            row.Children.Add(new TextBlock
+            {
+                Text = string.Join(" · ", detailParts),
+                FontSize = 11,
+                Opacity = 0.7,
+                TextWrapping = TextWrapping.Wrap,
+            });
+        }
+
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        if (!string.IsNullOrWhiteSpace(link.TaskId) && _projectId is not null)
+        {
+            var open = SoftSubtleButton("Open");
+            var otherId = link.TaskId;
+            open.Click += async (_, _) =>
+            {
+                if (_projectId is not null)
+                {
+                    await LoadTaskAsync(_projectId, otherId);
+                }
+            };
+            actions.Children.Add(open);
+        }
+
+        if (!string.IsNullOrWhiteSpace(link.DependencyId))
+        {
+            var clear = SoftSubtleButton("Clear waiting");
+            clear.Click += async (_, _) => await UnlinkAsync(link);
+            actions.Children.Add(clear);
+        }
+
+        if (actions.Children.Count > 0)
+        {
+            row.Children.Add(actions);
+        }
+
+        return row;
+    }
+
+    private void ResetTitleShortenUi(bool showSuggest)
+    {
+        TitleShortenPanel.Visibility = Visibility.Collapsed;
+        TitleShortenProposalBox.Text = string.Empty;
+        SuggestShorterTitleButton.Visibility = showSuggest ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void SuggestShorterTitle_Click(object sender, RoutedEventArgs e)
+    {
+        if (_task is null)
+        {
+            return;
+        }
+
+        var current = TitleBox.Text?.Trim();
+        if (string.IsNullOrWhiteSpace(current))
+        {
+            current = _task.Title;
+        }
+
+        var suggestion = TitleShortenHelper.Suggest(current);
+        TitleShortenProposalBox.Text = suggestion ?? current;
+        TitleShortenPanel.Visibility = Visibility.Visible;
+        FooterHint.Text = suggestion is null
+            ? "Title is already short — edit the proposal if you still want a different handle."
+            : "Review the shorter title, then Accept or Cancel.";
+        TitleShortenProposalBox.Focus(FocusState.Programmatic);
+    }
+
+    private async void AcceptShorterTitle_Click(object sender, RoutedEventArgs e)
+    {
+        if (_task is null || _taskId is null)
+        {
+            return;
+        }
+
+        var accepted = TitleShortenProposalBox.Text?.Trim() ?? string.Empty;
+        if (accepted.Length == 0)
+        {
+            FooterHint.Text = "Shorter title can’t be empty.";
+            return;
+        }
+
+        var priorTitle = _task.Title;
+        var (newTitle, newBody) = TitleShortenHelper.ApplyAccepted(priorTitle, _task.Body, accepted);
+        if (string.Equals(newTitle, priorTitle, StringComparison.Ordinal) && newBody is null)
+        {
+            ResetTitleShortenUi(showSuggest: true);
+            FooterHint.Text = "No title change.";
+            return;
+        }
+
+        using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+        if (!await client.UpdateTaskAsync(_taskId, title: newTitle, body: newBody))
+        {
+            FooterHint.Text = "Could not save shorter title.";
+            return;
+        }
+
+        _task.Title = newTitle;
+        if (newBody is not null)
+        {
+            _task.Body = newBody;
+        }
+
+        TitleBox.Text = newTitle;
+        ResetTitleShortenUi(showSuggest: true);
+        FooterHint.Text = newBody is null
+            ? "Title shortened."
+            : "Title shortened — prior title kept in Brief.";
+        ContentChanged?.Invoke(this, EventArgs.Empty);
+        BuildOverview();
+    }
+
+    private void CancelShorterTitle_Click(object sender, RoutedEventArgs e)
+    {
+        ResetTitleShortenUi(showSuggest: _task is not null);
+        FooterHint.Text = "Shorter title canceled — nothing changed.";
     }
 
     private void BuildNotes()
@@ -888,7 +1302,8 @@ public sealed partial class WorkbenchDetailPanel : UserControl
         LinksHost.Children.Add(Label("Waiting on"));
         if (_links.WaitingOn.Count == 0)
         {
-            LinksHost.Children.Add(BodyText("Nothing upstream. This task isn't blocked by another task."));
+            LinksHost.Children.Add(BodyText(
+                "Not waiting on another task. Link an upstream task here when this work depends on someone else’s finish."));
         }
         else
         {
@@ -1042,7 +1457,7 @@ public sealed partial class WorkbenchDetailPanel : UserControl
             Padding = new Thickness(12),
             CornerRadius = new CornerRadius(12),
             BorderThickness = new Thickness(1),
-            BorderBrush = (Brush)Application.Current.Resources["OrbitCellAccentBrush"],
+            BorderBrush = (Brush)Application.Current.Resources["CardStrokeColorDefaultBrush"],
             Background = (Brush)Application.Current.Resources["CardBackgroundFillColorSecondaryBrush"],
             Child = body,
         };
@@ -1119,6 +1534,17 @@ public sealed partial class WorkbenchDetailPanel : UserControl
             Opacity = 0.75,
             TextWrapping = TextWrapping.Wrap,
         });
+
+        var since = OperationalSinceFormatter.FormatSince(link.CreatedAt);
+        if (!string.IsNullOrWhiteSpace(since))
+        {
+            body.Children.Add(new TextBlock
+            {
+                Text = since!,
+                FontSize = 11,
+                Opacity = 0.7,
+            });
+        }
 
         if (link.Satisfied && anchorIsWaiting)
         {
@@ -1331,6 +1757,12 @@ public sealed partial class WorkbenchDetailPanel : UserControl
     private async Task RefreshLinksAsync()
     {
         using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+        if (!string.IsNullOrWhiteSpace(_taskId))
+        {
+            _links = await client.GetTaskDependenciesAsync(_taskId);
+            BuildOverview();
+        }
+
         await BuildLinksAsync(client);
         ContentChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -1563,7 +1995,7 @@ public sealed partial class WorkbenchDetailPanel : UserControl
                 return;
             }
 
-            DetailTabs.SelectedIndex = 1;
+            DetailTabs.SelectedIndex = TabConversation;
             AgentInput.Text = $"Find or link the file for this work: {q}";
             await SendAgentAsync();
         };
@@ -2274,8 +2706,8 @@ public sealed partial class WorkbenchDetailPanel : UserControl
             var targetId = await ProjectPickUi.ShowPickerAsync(
                 XamlRoot,
                 choices,
-                "Merge project into…",
-                $"Choose the project that should keep the work from “{_projectName}”. This project will be archived.");
+                "Merge into…",
+                $"This looks like the wrong project. Choose the project that should keep the work from “{_projectName}”. This project will be archived.");
             if (string.IsNullOrWhiteSpace(targetId))
             {
                 return;

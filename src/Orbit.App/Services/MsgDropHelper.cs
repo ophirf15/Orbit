@@ -10,6 +10,12 @@ namespace Orbit_App.Services;
 /// </summary>
 public static class MsgDropHelper
 {
+    /// <summary>Custom payload format for in-app Orbit tree drags (tasks/projects).</summary>
+    public const string OrbitTreeDragFormat = "Orbit.TreeNodeId";
+
+    /// <summary>Text payload prefix used because custom DataPackage formats are unreliable in WinUI DnD.</summary>
+    public const string OrbitTreeDragPrefix = "orbit-tree:";
+
     public sealed class MsgDropPayload
     {
         public string? SourcePath { get; init; }
@@ -19,8 +25,84 @@ public static class MsgDropHelper
         public string SuggestedFileName { get; init; } = "dropped.msg";
     }
 
+    public static bool TryParseOrbitTreeDragId(string? text, out string nodeId)
+    {
+        nodeId = string.Empty;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var trimmed = text.Trim();
+        if (trimmed.StartsWith(OrbitTreeDragPrefix, StringComparison.Ordinal))
+        {
+            nodeId = trimmed[OrbitTreeDragPrefix.Length..].Trim();
+            return nodeId.Length > 0;
+        }
+
+        return false;
+    }
+
+    public static bool LooksLikeOrbitTreeDrag(DataPackageView view)
+    {
+        ArgumentNullException.ThrowIfNull(view);
+        try
+        {
+            if (view.Contains(OrbitTreeDragFormat))
+            {
+                return true;
+            }
+
+            // Prefixed text without file/OLE payloads — TreeView may only expose Text.
+            if (view.Contains(StandardDataFormats.Text)
+                && !view.Contains(StandardDataFormats.StorageItems)
+                && !HasOutlookOleFormats(view))
+            {
+                // AvailableFormats alone can't prove the prefix; treat text-only in-app packages
+                // as tree drags so email captions never steal the gesture. Real .msg drops always
+                // advertise StorageItems or Outlook OLE formats.
+                return true;
+            }
+        }
+        catch (Exception)
+        {
+            // AvailableFormats can throw mid-drag.
+        }
+
+        return false;
+    }
+
+    public static bool LooksLikeMsgDrop(DataPackageView view)
+    {
+        ArgumentNullException.ThrowIfNull(view);
+        if (LooksLikeOrbitTreeDrag(view))
+        {
+            return false;
+        }
+
+        try
+        {
+            if (view.Contains(StandardDataFormats.StorageItems))
+            {
+                return true; // refined on Drop (folder vs .msg)
+            }
+
+            return HasOutlookOleFormats(view);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
     public static void AcceptMsgDrag(Microsoft.UI.Xaml.DragEventArgs e)
     {
+        if (!LooksLikeMsgDrop(e.DataView))
+        {
+            e.AcceptedOperation = DataPackageOperation.None;
+            return;
+        }
+
         e.AcceptedOperation = DataPackageOperation.Copy;
         e.DragUIOverride.IsCaptionVisible = true;
         e.DragUIOverride.Caption = "Drop email into Orbit";
@@ -30,6 +112,11 @@ public static class MsgDropHelper
     public static async Task<MsgDropPayload?> TryGetMsgAsync(DataPackageView view)
     {
         ArgumentNullException.ThrowIfNull(view);
+
+        if (LooksLikeOrbitTreeDrag(view))
+        {
+            return null;
+        }
 
         if (view.Contains(StandardDataFormats.StorageItems))
         {
@@ -104,6 +191,23 @@ public static class MsgDropHelper
         catch (Exception)
         {
             return null;
+        }
+    }
+
+    private static bool HasOutlookOleFormats(DataPackageView view)
+    {
+        try
+        {
+            var formats = view.AvailableFormats.ToList();
+            var hasDescriptor = formats.Any(f =>
+                f.Contains("FileGroupDescriptor", StringComparison.OrdinalIgnoreCase));
+            var hasContents = formats.Any(f =>
+                f.Equals("FileContents", StringComparison.OrdinalIgnoreCase));
+            return hasDescriptor && hasContents;
+        }
+        catch (Exception)
+        {
+            return false;
         }
     }
 

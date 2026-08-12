@@ -21,6 +21,7 @@ public static class HostEndpoints
     public const string Workbench = "/v1/workbench";
     public const string Tasks = "/v1/tasks";
     public const string TaskById = "/v1/tasks/{id}";
+    public const string TaskHistory = "/v1/tasks/{id}/history";
     public const string TasksBlocked = "/v1/tasks/blocked";
     public const string Notes = "/v1/notes";
     public const string NoteById = "/v1/notes/{id}";

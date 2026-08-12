@@ -8,11 +8,9 @@
     Title="Orbit"
     mc:Ignorable="d">
 
-    <Window.SystemBackdrop>
-        <MicaBackdrop />
-    </Window.SystemBackdrop>
+    <!-- SystemBackdrop applied once via BackdropService (Mica → Acrylic → none). -->
 
-    <Grid>
+    <Grid Background="Transparent">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
@@ -27,6 +25,6 @@
             </TitleBar.IconSource>
         </TitleBar>
 
-        <Frame x:Name="RootFrame" Grid.Row="1" />
+        <Frame x:Name="RootFrame" Grid.Row="1" Background="Transparent" />
     </Grid>
 </Window>

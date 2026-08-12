@@ -1,3 +1,5 @@
+using Orbit.Core.Pulse;
+
 namespace Orbit_App.ViewModels;
 
 public sealed class PulseVm
@@ -199,6 +201,18 @@ public sealed class PulseConcernVm
         "not_started" => "New",
         _ => Status,
     };
+
+    /// <summary>Chip context: owning project.</summary>
+    public string ContextLine =>
+        string.IsNullOrWhiteSpace(ProjectName) ? "No project" : ProjectName;
+
+    /// <summary>Chip action: next move when set, otherwise the concern title.</summary>
+    public string ActionLine =>
+        string.IsNullOrWhiteSpace(NextAction) ? Title : NextAction!;
+
+    /// <summary>Human reason why this concern needs attention (text, not color-only).</summary>
+    public string ReasonLabel =>
+        AttentionReasonClassifier.Classify(Status, NextAction, SourceKind, UpdatedAt);
 
     public string SubtitleLine =>
         string.IsNullOrWhiteSpace(NextAction)

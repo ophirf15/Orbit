@@ -41,6 +41,28 @@ public sealed class ArchiveMutationTests
         Assert.DoesNotContain(workbench.GetSnapshot().Cells, c => c.Id == ids.HarborProjectId);
     }
 
+    [Fact]
+    public void Archive_blocker_hides_from_project_context()
+    {
+        using var temp = new TempDb();
+        var factory = OpenMigrated(temp);
+        var ids = new DemoGraphSeed(factory).Seed();
+        var mutations = new OrbitMutationStore(factory);
+        var contexts = new ProjectContextReadStore(factory);
+
+        var before = contexts.GetContext(ids.HarborProjectId);
+        Assert.NotNull(before);
+        Assert.NotEmpty(before!.Blockers);
+        var blockerId = before.Blockers[0].Id;
+        Assert.False(string.IsNullOrWhiteSpace(before.Blockers[0].CreatedAt));
+
+        mutations.Archive("blocker", blockerId);
+
+        var after = contexts.GetContext(ids.HarborProjectId);
+        Assert.NotNull(after);
+        Assert.DoesNotContain(after!.Blockers, b => b.Id == blockerId);
+    }
+
     private static SqliteConnectionFactory OpenMigrated(TempDb temp)
     {
         var factory = new SqliteConnectionFactory(temp.DbPath);

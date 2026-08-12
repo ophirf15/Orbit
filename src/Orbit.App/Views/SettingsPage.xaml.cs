@@ -6,7 +6,10 @@ using Orbit.Core.Updates;
 using Orbit.Infrastructure.Diagnostics;
 using Orbit.Infrastructure.Email;
 using Orbit.Infrastructure.Hermes;
+using Orbit.Infrastructure.Sync;
 using Orbit_App.Services;
+using Windows.Storage.Pickers;
+using WinRT.Interop;
 
 namespace Orbit_App.Views;
 
@@ -47,7 +50,21 @@ public sealed partial class SettingsPage : Page
         PaneAppearance.Visibility = tag == "appearance" ? Visibility.Visible : Visibility.Collapsed;
         PaneHermes.Visibility = tag == "hermes" ? Visibility.Visible : Visibility.Collapsed;
         PaneMail.Visibility = tag == "mail" ? Visibility.Visible : Visibility.Collapsed;
+        PaneBackup.Visibility = tag == "backup" ? Visibility.Visible : Visibility.Collapsed;
+        PaneUpdates.Visibility = tag == "updates" ? Visibility.Visible : Visibility.Collapsed;
         PaneAdvanced.Visibility = tag == "advanced" ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void SetAdvancedOrHermesStatus(string message)
+    {
+        if (PaneAdvanced.Visibility == Visibility.Visible)
+        {
+            DiagnosticsActionText.Text = message;
+            return;
+        }
+
+        HermesTestResultText.Visibility = Visibility.Visible;
+        HermesTestResultText.Text = message;
     }
 
     private void LoadFromSettings()
@@ -73,7 +90,12 @@ public sealed partial class SettingsPage : Page
         CoreHostApiKeyBox.Header = coreKeyPresent
             ? "Core Host API key (sidecar present — leave blank to keep; enter new value to replace)"
             : "Core Host API key (required for LAN bind; auto-created on Save if missing)";
-        OneDriveBox.Text = s.OneDriveSnapshotFolder ?? string.Empty;
+        OneDrivePathText.Text = string.IsNullOrWhiteSpace(s.OneDriveSnapshotFolder)
+            ? "Backup folder: (not set)"
+            : "Backup folder: " + s.OneDriveSnapshotFolder;
+        SyncDeviceText.Text = string.IsNullOrWhiteSpace(s.DeviceId)
+            ? "Device id: (pending)"
+            : "Device id: " + s.DeviceId;
         CalendarIcsBox.Text = s.CalendarIcsPath ?? string.Empty;
         GraphClientIdBox.Text = s.MicrosoftGraphClientId ?? string.Empty;
         GraphTenantBox.Text = string.IsNullOrWhiteSpace(s.MicrosoftGraphTenantId) ? "common" : s.MicrosoftGraphTenantId;
@@ -276,7 +298,6 @@ public sealed partial class SettingsPage : Page
 
     private void CopyCoreEnvForHermesButton_Click(object sender, RoutedEventArgs e)
     {
-        HermesTestResultText.Visibility = Visibility.Visible;
         try
         {
             var s = App.Settings;
@@ -293,8 +314,8 @@ public sealed partial class SettingsPage : Page
 
             if (string.IsNullOrWhiteSpace(key))
             {
-                HermesTestResultText.Text =
-                    "No Core API key yet. Set a LAN bind and Save (auto-creates a key), or paste a Core Host API key first.";
+                SetAdvancedOrHermesStatus(
+                    "No Core API key yet. Set a LAN bind and Save (auto-creates a key), or paste a Core Host API key first.");
                 return;
             }
 
@@ -308,19 +329,18 @@ public sealed partial class SettingsPage : Page
                 url.Contains("127.0.0.1", StringComparison.Ordinal) ||
                 url.Contains("localhost", StringComparison.OrdinalIgnoreCase);
 
-            HermesTestResultText.Text = loopback
+            SetAdvancedOrHermesStatus(loopback
                 ? "Copied — but Core URL is loopback. Remote Hermes cannot reach it. Set Core Host bind to your LAN or Tailscale IP, Save, then copy again.\n\n" + snippet
-                : "Copied ORBIT_CORE_URL / ORBIT_API_KEY for ~/.hermes/.env. Paste on the Hermes host and reload MCP.\n\n" + snippet;
+                : "Copied ORBIT_CORE_URL / ORBIT_API_KEY for ~/.hermes/.env. Paste on the Hermes host and reload MCP.\n\n" + snippet);
         }
         catch (Exception ex)
         {
-            HermesTestResultText.Text = "Copy failed: " + ex.Message;
+            SetAdvancedOrHermesStatus("Copy failed: " + ex.Message);
         }
     }
 
     private async void OpenHermesDashboardButton_Click(object sender, RoutedEventArgs e)
     {
-        HermesTestResultText.Visibility = Visibility.Visible;
         try
         {
             var apiUrl = App.Settings.HermesBaseUrl;
@@ -332,21 +352,21 @@ public sealed partial class SettingsPage : Page
             var dash = HermesPairing.DeriveDashboardUrl(apiUrl);
             if (dash is null)
             {
-                HermesTestResultText.Text =
-                    "Set a valid Hermes API URL first (e.g. http://127.0.0.1:8642). Dashboard is usually the same host on port 9119.";
+                SetAdvancedOrHermesStatus(
+                    "Set a valid Hermes API URL first (e.g. http://127.0.0.1:8642). Dashboard is usually the same host on port 9119.");
                 return;
             }
 
             await Windows.System.Launcher.LaunchUriAsync(new Uri(dash));
-            HermesTestResultText.Text =
+            SetAdvancedOrHermesStatus(
                 $"Opened {dash}\n\n" +
                 "Use the Hermes dashboard to connect your AI provider, Telegram, and other Hermes features. " +
                 "Local Docker login is in hermes-local\\dashboard-login.txt under LocalAppData\\Orbit. " +
-                "Orbit Agent chat still uses the API URL + API_SERVER_KEY (Connect & save).";
+                "Orbit Agent chat still uses the API URL + API_SERVER_KEY (Connect & save).");
         }
         catch (Exception ex)
         {
-            HermesTestResultText.Text = "Could not open dashboard: " + ex.Message;
+            SetAdvancedOrHermesStatus("Could not open dashboard: " + ex.Message);
         }
     }
 
@@ -546,7 +566,6 @@ public sealed partial class SettingsPage : Page
 
     private void PrepareLocalHermesButton_Click(object sender, RoutedEventArgs e)
     {
-        HermesTestResultText.Visibility = Visibility.Visible;
         try
         {
             var s = App.Settings;
@@ -581,18 +600,18 @@ public sealed partial class SettingsPage : Page
             HermesApiKeyBox.Password = string.Empty;
             LoadFromSettings();
 
-            HermesTestResultText.Text =
+            SetAdvancedOrHermesStatus(
                 $"Local Hermes folder ready:\n{bundle.Directory}\n\n" +
                 "1. docker compose up -d\n" +
                 $"2. Open dashboard: {bundle.DashboardUrl}\n" +
                 $"   Login: {bundle.DashboardUsername} / {bundle.DashboardPassword}\n" +
                 "   (also saved in dashboard-login.txt)\n" +
                 "3. In the dashboard: AI provider + optional Telegram\n" +
-                "4. Back here: Connect & save (API key already stored)";
+                "4. Back here: Connect & save (API key already stored)");
         }
         catch (Exception ex)
         {
-            HermesTestResultText.Text = "Prepare failed: " + ex.Message;
+            SetAdvancedOrHermesStatus("Prepare failed: " + ex.Message);
         }
     }
 
@@ -708,7 +727,16 @@ public sealed partial class SettingsPage : Page
         s.CoreHostBindAddress = string.IsNullOrWhiteSpace(CoreHostBindBox.Text)
             ? OrbitSettingsDefaults.CoreHostBindAddress
             : CoreHostBindBox.Text.Trim();
-        s.OneDriveSnapshotFolder = string.IsNullOrWhiteSpace(OneDriveBox.Text) ? null : OneDriveBox.Text.Trim();
+        // OneDriveSnapshotFolder is set via Choose folder / Clear — keep current App.Settings value.
+        s.OneDriveSnapshotFolder = App.Settings.OneDriveSnapshotFolder;
+        if (!string.IsNullOrWhiteSpace(s.OneDriveSnapshotFolder)
+            && !SnapshotService.TryValidateSyncFolderWritable(s.OneDriveSnapshotFolder, out var syncFolderError))
+        {
+            StatusText.Text = syncFolderError ?? "Backup folder is not writable.";
+            StatusText.Visibility = Visibility.Visible;
+            return;
+        }
+
         s.CalendarIcsPath = string.IsNullOrWhiteSpace(CalendarIcsBox.Text) ? null : CalendarIcsBox.Text.Trim();
         s.MicrosoftGraphClientId = string.IsNullOrWhiteSpace(GraphClientIdBox.Text) ? null : GraphClientIdBox.Text.Trim();
         s.MicrosoftGraphTenantId = string.IsNullOrWhiteSpace(GraphTenantBox.Text) ? "common" : GraphTenantBox.Text.Trim();
@@ -756,24 +784,91 @@ public sealed partial class SettingsPage : Page
         }
     }
 
+    private async void ChooseBackupFolderButton_Click(object sender, RoutedEventArgs e)
+    {
+        string? path = null;
+        try
+        {
+            var picker = new FolderPicker();
+            picker.FileTypeFilter.Add("*");
+            if (App.MainWindow is not null)
+            {
+                var hwnd = WindowNative.GetWindowHandle(App.MainWindow);
+                InitializeWithWindow.Initialize(picker, hwnd);
+            }
+
+            var folder = await picker.PickSingleFolderAsync();
+            path = folder?.Path;
+        }
+        catch (Exception ex)
+        {
+            SyncStatusText.Text = "Folder picker failed: " + ex.Message;
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            SyncStatusText.Text = "Folder picker cancelled.";
+            return;
+        }
+
+        if (!SnapshotService.TryValidateSyncFolderWritable(path, out var error))
+        {
+            SyncStatusText.Text = error ?? "Folder is not writable.";
+            return;
+        }
+
+        var previous = App.Settings.OneDriveSnapshotFolder;
+        App.Settings.OneDriveSnapshotFolder = path.Trim();
+        if (!string.Equals(previous, App.Settings.OneDriveSnapshotFolder, StringComparison.OrdinalIgnoreCase))
+        {
+            App.Settings.SkipEmptyBackupContinue = false;
+        }
+
+        App.SettingsStore.Save(App.Settings);
+        OneDrivePathText.Text = "Backup folder: " + App.Settings.OneDriveSnapshotFolder;
+        SyncStatusText.Text = "Backup folder saved.";
+        await RefreshSyncAsync();
+    }
+
+    private async void ClearBackupFolderButton_Click(object sender, RoutedEventArgs e)
+    {
+        App.Settings.OneDriveSnapshotFolder = null;
+        App.Settings.SkipEmptyBackupContinue = false;
+        App.SettingsStore.Save(App.Settings);
+        OneDrivePathText.Text = "Backup folder: (not set)";
+        SyncStatusText.Text = "Backup folder cleared.";
+        await RefreshSyncAsync();
+    }
+
     private async void SnapshotNowButton_Click(object sender, RoutedEventArgs e)
     {
-        SyncStatusText.Text = "Creating snapshot…";
+        SyncStatusText.Text = "Creating backup…";
         SnapshotNowButton.IsEnabled = false;
         try
         {
-            App.Settings.OneDriveSnapshotFolder =
-                string.IsNullOrWhiteSpace(OneDriveBox.Text) ? null : OneDriveBox.Text.Trim();
+            if (string.IsNullOrWhiteSpace(App.Settings.OneDriveSnapshotFolder))
+            {
+                SyncStatusText.Text = "Choose a backup folder first.";
+                return;
+            }
+
+            if (!SnapshotService.TryValidateSyncFolderWritable(App.Settings.OneDriveSnapshotFolder, out var error))
+            {
+                SyncStatusText.Text = error ?? "Backup folder is not writable.";
+                return;
+            }
+
             App.SettingsStore.Save(App.Settings);
 
             using var client = new CoreHostClient(App.Settings, App.SettingsStore);
             var result = await client.CreateSyncSnapshotAsync();
-            SyncStatusText.Text = result ?? "Snapshot finished.";
+            SyncStatusText.Text = result ?? "Backup finished.";
             await RefreshSyncAsync();
         }
         catch (Exception ex)
         {
-            SyncStatusText.Text = "Snapshot failed: " + ex.Message;
+            SyncStatusText.Text = "Backup failed: " + ex.Message;
         }
         finally
         {
@@ -800,6 +895,8 @@ public sealed partial class SettingsPage : Page
             using var client = new CoreHostClient(App.Settings, App.SettingsStore);
             var result = await client.RestoreSyncSnapshotAsync(item.SnapshotId);
             SyncStatusText.Text = result ?? "Restore finished.";
+            App.Settings.SkipEmptyBackupContinue = false;
+            App.SettingsStore.Save(App.Settings);
             await RefreshSyncAsync();
         }
         catch (Exception ex)
@@ -817,19 +914,38 @@ public sealed partial class SettingsPage : Page
         try
         {
             using var client = new CoreHostClient(App.Settings, App.SettingsStore);
-            var status = await client.GetSyncStatusSummaryAsync();
+            var status = await client.GetSyncStatusAsync();
             var snapshots = await client.ListSyncSnapshotsAsync();
             DispatcherQueue.TryEnqueue(() =>
             {
-                SyncStatusText.Text = status ?? "Sync status: host unavailable.";
-                if (status is not null && status.Contains("Conflict", StringComparison.OrdinalIgnoreCase))
+                if (status is null)
                 {
-                    SyncConflictText.Text = status;
-                    SyncConflictText.Visibility = Visibility.Visible;
+                    SyncStatusText.Text = "Sync status: host unavailable.";
+                    SyncConflictText.Visibility = Visibility.Collapsed;
                 }
                 else
                 {
-                    SyncConflictText.Visibility = Visibility.Collapsed;
+                    SyncStatusText.Text = CoreHostClient.FormatSyncStatusSummary(status);
+                    if (!string.IsNullOrWhiteSpace(status.DeviceId))
+                    {
+                        SyncDeviceText.Text = "Device id: " + status.DeviceId;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(status.SyncFolder))
+                    {
+                        OneDrivePathText.Text = "Backup folder: " + status.SyncFolder;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(status.ConflictMessage)
+                        || string.Equals(status.Kind, "Conflict", StringComparison.OrdinalIgnoreCase))
+                    {
+                        SyncConflictText.Text = status.ConflictMessage ?? status.Message ?? "Sync conflict.";
+                        SyncConflictText.Visibility = Visibility.Visible;
+                    }
+                    else
+                    {
+                        SyncConflictText.Visibility = Visibility.Collapsed;
+                    }
                 }
 
                 SnapshotsList.Items.Clear();

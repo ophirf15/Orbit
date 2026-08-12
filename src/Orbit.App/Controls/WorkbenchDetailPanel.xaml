@@ -17,7 +17,7 @@
         <Border
             Padding="0"
             Background="{ThemeResource OrbitDetailSurfaceBrush}"
-            BorderBrush="{ThemeResource OrbitCellAccentBrush}"
+            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
             BorderThickness="1.5"
             CornerRadius="16">
             <!-- Inset content so TabView/children never paint over the stroke -->
@@ -97,6 +97,42 @@
                                 <FontIcon FontSize="16" Glyph="&#xE74D;" Foreground="#E81123" />
                             </Button>
                         </Grid>
+                        <Button
+                            x:Name="SuggestShorterTitleButton"
+                            HorizontalAlignment="Left"
+                            Click="SuggestShorterTitle_Click"
+                            Content="Suggest shorter title"
+                            FontSize="11"
+                            Padding="8,2"
+                            Style="{StaticResource SubtleButtonStyle}"
+                            Visibility="Collapsed" />
+                        <StackPanel
+                            x:Name="TitleShortenPanel"
+                            Spacing="6"
+                            Visibility="Collapsed">
+                            <TextBlock
+                                FontSize="11"
+                                Opacity="0.75"
+                                Text="Proposed shorter title — Accept saves; Cancel leaves everything unchanged."
+                                TextWrapping="WrapWholeWords" />
+                            <TextBox
+                                x:Name="TitleShortenProposalBox"
+                                AcceptsReturn="False"
+                                FontSize="13"
+                                PlaceholderText="Shorter title…"
+                                TextWrapping="NoWrap" />
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button
+                                    x:Name="AcceptShorterTitleButton"
+                                    Click="AcceptShorterTitle_Click"
+                                    Content="Accept"
+                                    Style="{StaticResource AccentButtonStyle}" />
+                                <Button
+                                    Click="CancelShorterTitle_Click"
+                                    Content="Cancel"
+                                    Style="{StaticResource SubtleButtonStyle}" />
+                            </StackPanel>
+                        </StackPanel>
                     </StackPanel>
                     <Button
                         Grid.Column="3"
@@ -121,7 +157,7 @@
                     <TabViewItem.Header>
                         <StackPanel Orientation="Horizontal" Spacing="6">
                             <FontIcon FontSize="12" Glyph="&#xE8A5;" />
-                            <TextBlock FontWeight="SemiBold" Text="Brief" />
+                            <TextBlock FontWeight="SemiBold" Text="Overview" />
                         </StackPanel>
                     </TabViewItem.Header>
                     <ScrollViewer Padding="14,10" VerticalScrollBarVisibility="Auto">
@@ -132,7 +168,7 @@
                     <TabViewItem.Header>
                         <StackPanel Orientation="Horizontal" Spacing="6">
                             <FontIcon FontSize="14" Glyph="&#xE99A;" />
-                            <TextBlock Text="Agent" />
+                            <TextBlock Text="Conversation" />
                         </StackPanel>
                     </TabViewItem.Header>
                     <Grid Padding="14,10" RowSpacing="10">
@@ -150,7 +186,7 @@
                             <TextBlock
                                 Opacity="0.65"
                                 Style="{StaticResource CaptionTextBlockStyle}"
-                                Text="Secondary — brief lives on Brief. Use Agent for mutations when needed."
+                                Text="Secondary — living brief lives on Overview. Use Conversation for mutations when needed."
                                 TextWrapping="WrapWholeWords" />
                         </StackPanel>
                         <Border
@@ -201,32 +237,6 @@
                 <TabViewItem IsClosable="False">
                     <TabViewItem.Header>
                         <StackPanel Orientation="Horizontal" Spacing="6">
-                            <FontIcon FontSize="12" Glyph="&#xE71B;" />
-                            <TextBlock Text="Links" />
-                            <InfoBadge
-                                x:Name="LinksBadge"
-                                Visibility="Collapsed"
-                                Style="{ThemeResource AttentionValueInfoBadgeStyle}" />
-                        </StackPanel>
-                    </TabViewItem.Header>
-                    <ScrollViewer Padding="14,10" VerticalScrollBarVisibility="Auto">
-                        <StackPanel x:Name="LinksHost" Spacing="10" />
-                    </ScrollViewer>
-                </TabViewItem>
-                <TabViewItem IsClosable="False">
-                    <TabViewItem.Header>
-                        <StackPanel Orientation="Horizontal" Spacing="6">
-                            <FontIcon FontSize="12" Glyph="&#xE716;" />
-                            <TextBlock Text="Contacts" />
-                        </StackPanel>
-                    </TabViewItem.Header>
-                    <ScrollViewer Padding="14,10" VerticalScrollBarVisibility="Auto">
-                        <StackPanel x:Name="ContactsHost" Spacing="10" />
-                    </ScrollViewer>
-                </TabViewItem>
-                <TabViewItem IsClosable="False">
-                    <TabViewItem.Header>
-                        <StackPanel Orientation="Horizontal" Spacing="6">
                             <FontIcon FontSize="12" Glyph="&#xE8B7;" />
                             <TextBlock Text="Files" />
                         </StackPanel>
@@ -238,12 +248,41 @@
                 <TabViewItem IsClosable="False">
                     <TabViewItem.Header>
                         <StackPanel Orientation="Horizontal" Spacing="6">
-                            <FontIcon FontSize="12" Glyph="&#xE713;" />
-                            <TextBlock Text="Fields" />
+                            <FontIcon FontSize="12" Glyph="&#xE716;" />
+                            <TextBlock Text="People" />
                         </StackPanel>
                     </TabViewItem.Header>
                     <ScrollViewer Padding="14,10" VerticalScrollBarVisibility="Auto">
-                        <StackPanel x:Name="FieldsHost" Spacing="10" />
+                        <StackPanel x:Name="ContactsHost" Spacing="10" />
+                    </ScrollViewer>
+                </TabViewItem>
+                <TabViewItem IsClosable="False">
+                    <TabViewItem.Header>
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <FontIcon FontSize="12" Glyph="&#xE81C;" />
+                            <TextBlock Text="History" />
+                        </StackPanel>
+                    </TabViewItem.Header>
+                    <ScrollViewer Padding="14,10" VerticalScrollBarVisibility="Auto">
+                        <StackPanel x:Name="HistoryHost" Spacing="8" />
+                    </ScrollViewer>
+                </TabViewItem>
+                <TabViewItem IsClosable="False">
+                    <TabViewItem.Header>
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <FontIcon FontSize="12" Glyph="&#xE712;" />
+                            <TextBlock Text="More" />
+                            <InfoBadge
+                                x:Name="LinksBadge"
+                                Visibility="Collapsed"
+                                Style="{ThemeResource AttentionValueInfoBadgeStyle}" />
+                        </StackPanel>
+                    </TabViewItem.Header>
+                    <ScrollViewer Padding="14,10" VerticalScrollBarVisibility="Auto">
+                        <StackPanel Spacing="16">
+                            <StackPanel x:Name="LinksHost" Spacing="10" />
+                            <StackPanel x:Name="FieldsHost" Spacing="10" />
+                        </StackPanel>
                     </ScrollViewer>
                 </TabViewItem>
             </TabView>
@@ -283,10 +322,11 @@
                         Click="MergeProject_Click"
                         CornerRadius="10"
                         Padding="14,8"
-                        Style="{StaticResource SubtleButtonStyle}">
+                        Style="{StaticResource SubtleButtonStyle}"
+                        ToolTipService.ToolTip="This is the wrong project — merge its work into another project and archive this one.">
                         <StackPanel Orientation="Horizontal" Spacing="6">
                             <FontIcon FontSize="14" Glyph="&#xE8DE;" />
-                            <TextBlock Text="Merge into…" />
+                            <TextBlock Text="This is the wrong project…" />
                         </StackPanel>
                     </Button>
                     <TextBlock

@@ -32,7 +32,96 @@ public sealed partial class ShellPage : Page
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
         _globalCaptureHotkey.Register(FocusQuickCapture);
+        await MaybeContinueFromBackupAsync();
         await NavigateInitialAsync();
+    }
+
+    private async Task MaybeContinueFromBackupAsync()
+    {
+        if (App.Settings.SkipEmptyBackupContinue
+            || string.IsNullOrWhiteSpace(App.Settings.OneDriveSnapshotFolder)
+            || XamlRoot is null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (App.HostConnection is not null)
+            {
+                await App.HostConnection.EnsureConnectedAsync();
+            }
+
+            using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+            var status = await client.GetSyncStatusAsync();
+            if (status is null
+                || !status.ContinueFromBackupAvailable
+                || string.IsNullOrWhiteSpace(status.LatestCloudSnapshotId))
+            {
+                return;
+            }
+
+            // Divergent dirty local must never be overwritten here (ADR 0016).
+            if (!string.IsNullOrWhiteSpace(status.ConflictMessage)
+                || string.Equals(status.Kind, "Conflict", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var choice = await BackupContinuePrompt.ShowAsync(XamlRoot, status);
+            switch (choice)
+            {
+                case BackupContinuePrompt.Choice.Continue:
+                {
+                    var result = await client.RestoreSyncSnapshotAsync(status.LatestCloudSnapshotId!);
+                    App.Settings.SkipEmptyBackupContinue = false;
+                    App.SettingsStore.Save(App.Settings);
+                    if (string.IsNullOrWhiteSpace(result)
+                        || result.StartsWith("Restore failed", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var fail = new ContentDialog
+                        {
+                            XamlRoot = XamlRoot,
+                            Title = "Restore failed",
+                            Content = string.IsNullOrWhiteSpace(result)
+                                ? "Host returned no restore result."
+                                : result,
+                            CloseButtonText = "OK",
+                        };
+                        await fail.ShowAsync();
+                    }
+                    else
+                    {
+                        // Ensure workbench/pulse reload against the replaced DB.
+                        try
+                        {
+                            if (App.HostConnection is not null)
+                            {
+                                await App.HostConnection.EnsureConnectedAsync();
+                            }
+                        }
+                        catch (Exception)
+                        {
+                            // Navigation still proceeds; user can Refresh.
+                        }
+                    }
+
+                    break;
+                }
+                case BackupContinuePrompt.Choice.StartFresh:
+                    App.Settings.SkipEmptyBackupContinue = true;
+                    App.SettingsStore.Save(App.Settings);
+                    break;
+                case BackupContinuePrompt.Choice.Cancelled:
+                    break;
+                default:
+                    break;
+            }
+        }
+        catch (Exception)
+        {
+            // Host/offline — leave empty workbench; Settings can restore later.
+        }
     }
 
     private async Task NavigateInitialAsync()
@@ -299,6 +388,12 @@ public sealed partial class ShellPage : Page
 
     private void Shell_DragOver(object sender, Microsoft.UI.Xaml.DragEventArgs e)
     {
+        if (MsgDropHelper.LooksLikeOrbitTreeDrag(e.DataView))
+        {
+            e.AcceptedOperation = Windows.ApplicationModel.DataTransfer.DataPackageOperation.None;
+            return;
+        }
+
         MsgDropHelper.AcceptMsgDrag(e);
     }
 

@@ -261,7 +261,7 @@ public sealed class ProjectContextReadStore
         using var cmd = connection.CreateCommand();
         cmd.CommandText =
             """
-            SELECT id, summary, status, task_id
+            SELECT id, summary, status, task_id, created_at
             FROM blockers
             WHERE project_id = $p AND archived_at IS NULL
             ORDER BY updated_at DESC
@@ -279,6 +279,7 @@ public sealed class ProjectContextReadStore
                 Summary = reader.GetString(1),
                 Status = reader.GetString(2),
                 TaskId = reader.IsDBNull(3) ? null : reader.GetString(3),
+                CreatedAt = reader.IsDBNull(4) ? null : reader.GetString(4),
             });
         }
 

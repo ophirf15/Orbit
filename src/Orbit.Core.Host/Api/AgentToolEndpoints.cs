@@ -1573,6 +1573,7 @@ public static class AgentToolEndpoints
         confidence = edge.Dependency.Confidence,
         evidenceRef = edge.Dependency.EvidenceRef,
         createdBy = edge.Dependency.CreatedBy,
+        createdAt = edge.Dependency.CreatedAt,
         taskId = edge.OtherTaskId,
         title = edge.OtherTaskTitle,
         status = edge.OtherTaskStatus,

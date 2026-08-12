@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Orbit.Core.Settings;
+using Orbit.Core.Workbench;
 using Orbit.Infrastructure.Settings;
 using Orbit_App.ViewModels;
 
@@ -1184,6 +1185,7 @@ public sealed class CoreHostClient : IDisposable
         NextAction = dto.NextAction,
         Expects = dto.Expects,
         Reason = dto.Reason,
+        CreatedAt = dto.CreatedAt,
         Satisfied = dto.Satisfied,
     };
 
@@ -1211,6 +1213,8 @@ public sealed class CoreHostClient : IDisposable
         public string? Expects { get; set; }
 
         public string? Reason { get; set; }
+
+        public string? CreatedAt { get; set; }
 
         public bool Satisfied { get; set; }
     }
@@ -1381,7 +1385,7 @@ public sealed class CoreHostClient : IDisposable
         return $"Restored snapshot {snapshotId}.";
     }
 
-    public async Task<string?> GetSyncStatusSummaryAsync(CancellationToken ct = default)
+    public async Task<SyncStatusInfo?> GetSyncStatusAsync(CancellationToken ct = default)
     {
         using var response = await _http.GetAsync("v1/sync/status", ct);
         if (!response.IsSuccessStatusCode)
@@ -1393,26 +1397,122 @@ public sealed class CoreHostClient : IDisposable
         using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
         if (!doc.RootElement.TryGetProperty("status", out var status))
         {
-            return "Sync status: (unknown)";
+            return null;
         }
 
-        var kind = status.TryGetProperty("kind", out var k) ? k.GetString() : "Unknown";
-        var message = status.TryGetProperty("message", out var m) ? m.GetString() : string.Empty;
-        var local = status.TryGetProperty("localRevision", out var lr) ? lr.GetInt64() : 0;
-        var cloud = status.TryGetProperty("latestCloudRevision", out var cr) && cr.ValueKind != JsonValueKind.Null
-            ? cr.GetInt64().ToString()
-            : "—";
-        var conflict = status.TryGetProperty("conflict", out var c) && c.ValueKind == JsonValueKind.Object
-            ? c.TryGetProperty("message", out var cm) ? cm.GetString() : "conflict"
-            : null;
-
-        var line = $"Sync: {kind} — {message} (local rev {local}, cloud rev {cloud})";
-        if (!string.IsNullOrWhiteSpace(conflict))
+        string? conflictMessage = null;
+        if (status.TryGetProperty("conflict", out var c) && c.ValueKind == JsonValueKind.Object)
         {
-            line += "\nConflict: " + conflict;
+            conflictMessage = c.TryGetProperty("message", out var cm) ? cm.GetString() : "conflict";
+        }
+
+        DateTimeOffset? lastSnapshotAt = null;
+        if (status.TryGetProperty("lastSnapshotAt", out var lsa) && lsa.ValueKind == JsonValueKind.String
+            && DateTimeOffset.TryParse(lsa.GetString(), out var parsed))
+        {
+            lastSnapshotAt = parsed;
+        }
+
+        return new SyncStatusInfo
+        {
+            Kind = status.TryGetProperty("kind", out var k) ? k.GetString() : "Unknown",
+            Message = status.TryGetProperty("message", out var m) ? m.GetString() : string.Empty,
+            SyncFolder = status.TryGetProperty("syncFolder", out var sf) ? sf.GetString() : null,
+            LocalRevision = status.TryGetProperty("localRevision", out var lr) ? lr.GetInt64() : 0,
+            LatestCloudRevision = status.TryGetProperty("latestCloudRevision", out var cr)
+                && cr.ValueKind is JsonValueKind.Number
+                ? cr.GetInt64()
+                : null,
+            LatestCloudSnapshotId = status.TryGetProperty("latestCloudSnapshotId", out var csid)
+                ? csid.GetString()
+                : null,
+            LocalDirty = status.TryGetProperty("localDirty", out var ld) && ld.ValueKind == JsonValueKind.True,
+            LastSnapshotAt = lastSnapshotAt,
+            DeviceId = status.TryGetProperty("deviceId", out var did) ? did.GetString() : null,
+            ContinueFromBackupAvailable = status.TryGetProperty("continueFromBackupAvailable", out var cont)
+                && cont.ValueKind == JsonValueKind.True,
+            AutoBackupHint = status.TryGetProperty("autoBackupHint", out var hint) ? hint.GetString() : null,
+            ConflictMessage = conflictMessage,
+        };
+    }
+
+    public async Task<string?> GetSyncStatusSummaryAsync(CancellationToken ct = default)
+    {
+        var status = await GetSyncStatusAsync(ct);
+        if (status is null)
+        {
+            return null;
+        }
+
+        return FormatSyncStatusSummary(status);
+    }
+
+    public static string FormatSyncStatusSummary(SyncStatusInfo status)
+    {
+        var cloud = status.LatestCloudRevision?.ToString() ?? "—";
+        var last = FormatLastBackup(status.LastSnapshotAt);
+        var line =
+            $"Sync: {status.Kind} — {status.Message} (local rev {status.LocalRevision}, cloud rev {cloud})";
+        if (!string.IsNullOrWhiteSpace(last))
+        {
+            line += "\n" + last;
+        }
+
+        if (!string.IsNullOrWhiteSpace(status.AutoBackupHint))
+        {
+            line += " · " + status.AutoBackupHint;
+        }
+
+        if (!string.IsNullOrWhiteSpace(status.DeviceId))
+        {
+            line += $"\nDevice id: {status.DeviceId}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(status.SyncFolder))
+        {
+            line += $"\nFolder: {status.SyncFolder}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(status.ConflictMessage))
+        {
+            line += "\nConflict: " + status.ConflictMessage;
         }
 
         return line;
+    }
+
+    public static string FormatLastBackup(DateTimeOffset? lastSnapshotAt)
+    {
+        if (lastSnapshotAt is null)
+        {
+            return "Last backup: never";
+        }
+
+        var age = DateTimeOffset.UtcNow - lastSnapshotAt.Value.ToUniversalTime();
+        if (age < TimeSpan.Zero)
+        {
+            age = TimeSpan.Zero;
+        }
+
+        string relative;
+        if (age.TotalMinutes < 1)
+        {
+            relative = "just now";
+        }
+        else if (age.TotalHours < 1)
+        {
+            relative = $"{(int)age.TotalMinutes}m ago";
+        }
+        else if (age.TotalDays < 1)
+        {
+            relative = $"{(int)age.TotalHours}h ago";
+        }
+        else
+        {
+            relative = $"{(int)age.TotalDays}d ago";
+        }
+
+        return $"Last backup {relative} ({lastSnapshotAt.Value.ToLocalTime():g})";
     }
 
     /// <summary>Exports a redacted diagnostics JSON or zip under the Host generated root.</summary>
@@ -1615,6 +1715,60 @@ public sealed class CoreHostClient : IDisposable
         };
     }
 
+    public async Task<IReadOnlyList<TaskTimelineLine>> GetTaskHistoryAsync(
+        string taskId,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(taskId))
+        {
+            return [];
+        }
+
+        using var response = await _http.GetAsync(
+            $"v1/tasks/{Uri.EscapeDataString(taskId.Trim())}/history?limit=120",
+            ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            return [];
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        var dto = await JsonSerializer.DeserializeAsync<TaskHistoryDto>(stream, JsonOptions, ct);
+        if (dto?.Lines is { Count: > 0 })
+        {
+            return dto.Lines
+                .Where(l => !string.IsNullOrWhiteSpace(l.Text))
+                .Select(l => new TaskTimelineLine
+                {
+                    Kind = l.Kind ?? TaskTimelineKinds.Change,
+                    At = l.At ?? string.Empty,
+                    WhenLabel = l.WhenLabel ?? string.Empty,
+                    Text = l.Text!,
+                    AtUtc = DateTimeOffset.TryParse(l.At, out var at) ? at.ToUniversalTime() : null,
+                })
+                .ToList();
+        }
+
+        if (dto?.Facts is null || dto.Facts.Count == 0)
+        {
+            return [];
+        }
+
+        var facts = dto.Facts
+            .Where(f => !string.IsNullOrWhiteSpace(f.Kind) && !string.IsNullOrWhiteSpace(f.At))
+            .Select(f => new TaskTimelineFact
+            {
+                Kind = f.Kind!,
+                At = f.At!,
+                Summary = f.Summary,
+                Detail = f.Detail,
+                StatusLabel = f.StatusLabel,
+                SourceEvent = f.SourceEvent,
+                DedupeKey = f.DedupeKey,
+            });
+        return TaskTimelineMapper.Map(facts);
+    }
+
     public async Task<LimboNoteVm?> GetLimboNoteAsync(string noteId, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(noteId))
@@ -1717,7 +1871,17 @@ public sealed class CoreHostClient : IDisposable
                     CreatedAt = n.CreatedAt ?? string.Empty,
                 })
                 .ToList(),
-            Blockers = (dto.Blockers ?? []).Select(b => b.Summary ?? string.Empty).Where(s => s.Length > 0).ToList(),
+            Blockers = (dto.Blockers ?? [])
+                .Where(b => !string.IsNullOrWhiteSpace(b.Summary))
+                .Select(b => new ContextBlockerVm
+                {
+                    Id = b.Id ?? string.Empty,
+                    Summary = b.Summary!,
+                    Status = b.Status ?? "open",
+                    TaskId = b.TaskId,
+                    CreatedAt = b.CreatedAt,
+                })
+                .ToList(),
             Contacts = (dto.Contacts ?? [])
                 .Where(c => !string.IsNullOrWhiteSpace(c.PersonId) || !string.IsNullOrWhiteSpace(c.DisplayName))
                 .Select(c => new ContextContactVm
@@ -2982,6 +3146,43 @@ public sealed class CoreHostClient : IDisposable
         public string? SourceMatchReason { get; set; }
     }
 
+    private sealed class TaskHistoryDto
+    {
+        public string? TaskId { get; set; }
+
+        public List<TaskHistoryFactDto>? Facts { get; set; }
+
+        public List<TaskHistoryLineDto>? Lines { get; set; }
+    }
+
+    private sealed class TaskHistoryFactDto
+    {
+        public string? Kind { get; set; }
+
+        public string? At { get; set; }
+
+        public string? Summary { get; set; }
+
+        public string? Detail { get; set; }
+
+        public string? StatusLabel { get; set; }
+
+        public string? SourceEvent { get; set; }
+
+        public string? DedupeKey { get; set; }
+    }
+
+    private sealed class TaskHistoryLineDto
+    {
+        public string? Kind { get; set; }
+
+        public string? At { get; set; }
+
+        public string? WhenLabel { get; set; }
+
+        public string? Text { get; set; }
+    }
+
     private sealed class LimboNoteByIdDto
     {
         public string? Id { get; set; }
@@ -3124,7 +3325,15 @@ public sealed class CoreHostClient : IDisposable
 
     private sealed class BlockerDto
     {
+        public string? Id { get; set; }
+
         public string? Summary { get; set; }
+
+        public string? Status { get; set; }
+
+        public string? TaskId { get; set; }
+
+        public string? CreatedAt { get; set; }
     }
 
     private sealed class ContactDto
@@ -4035,4 +4244,31 @@ public sealed class SyncSnapshotListItem
     public required string Display { get; init; }
 
     public override string ToString() => Display;
+}
+
+public sealed class SyncStatusInfo
+{
+    public string? Kind { get; init; }
+
+    public string? Message { get; init; }
+
+    public string? SyncFolder { get; init; }
+
+    public long LocalRevision { get; init; }
+
+    public long? LatestCloudRevision { get; init; }
+
+    public string? LatestCloudSnapshotId { get; init; }
+
+    public bool LocalDirty { get; init; }
+
+    public DateTimeOffset? LastSnapshotAt { get; init; }
+
+    public string? DeviceId { get; init; }
+
+    public bool ContinueFromBackupAvailable { get; init; }
+
+    public string? AutoBackupHint { get; init; }
+
+    public string? ConflictMessage { get; init; }
 }

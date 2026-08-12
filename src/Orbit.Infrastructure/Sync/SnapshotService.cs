@@ -66,6 +66,43 @@ public sealed class SnapshotService
         }
     }
 
+    public string DeviceId => _deviceId;
+
+    public string DeviceName => _deviceName;
+
+    public TimeSpan QuietPeriod => _options.QuietPeriod;
+
+    /// <summary>
+    /// Validates that <paramref name="folder"/> exists (or can be created) and is writable.
+    /// Does not place live SQLite in the folder — only a probe file under OrbitSnapshots.
+    /// </summary>
+    public static bool TryValidateSyncFolderWritable(string? folder, out string? error)
+    {
+        error = null;
+        if (string.IsNullOrWhiteSpace(folder))
+        {
+            error = "Choose a backup folder first.";
+            return false;
+        }
+
+        try
+        {
+            var root = folder.Trim();
+            Directory.CreateDirectory(root);
+            var snapshots = GetSnapshotsRoot(root);
+            Directory.CreateDirectory(snapshots);
+            var probe = Path.Combine(snapshots, ".orbit-write-probe");
+            File.WriteAllText(probe, DateTimeOffset.UtcNow.ToString("O"));
+            File.Delete(probe);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = "Folder is not writable: " + ex.Message;
+            return false;
+        }
+    }
+
     public void NotifyActivity()
     {
         lock (_gate)
@@ -156,7 +193,7 @@ public sealed class SnapshotService
 
                 ApplyRetention(snapshotsRoot);
                 _lastActivityUtc = DateTimeOffset.UtcNow;
-                _lastStatus = new SyncStatus
+                _lastStatus = EnrichStatus(new SyncStatus
                 {
                     Kind = SyncStatusKind.InSync,
                     Message = $"Snapshot {snapshotId} created (revision {revision}).",
@@ -166,7 +203,7 @@ public sealed class SnapshotService
                     LatestCloudSnapshotId = snapshotId,
                     LocalDirty = false,
                     LastSnapshotAt = manifest.CreatedAt,
-                };
+                });
 
                 return manifest;
             }
@@ -305,7 +342,7 @@ public sealed class SnapshotService
             // Ensure migrations are applied after restore.
             new SqliteMigrator(_factory).ApplyPendingMigrations();
 
-            _lastStatus = new SyncStatus
+            _lastStatus = EnrichStatus(new SyncStatus
             {
                 Kind = SyncStatusKind.RestoredFromCloud,
                 Message = $"Restored snapshot {snapshotId} (revision {manifest.Revision}).",
@@ -315,13 +352,19 @@ public sealed class SnapshotService
                 LatestCloudSnapshotId = snapshotId,
                 LocalDirty = false,
                 LastSnapshotAt = manifest.CreatedAt,
-            };
+            });
 
             return manifest;
         }
     }
 
-    public SyncStatus Reconcile(string? syncFolderOverride = null)
+    /// <summary>
+    /// Compares local lineage vs cloud snapshots. Empty local + cloud snapshots surfaces
+    /// <see cref="SyncStatus.ContinueFromBackupAvailable"/> unless
+    /// <paramref name="autoRestoreEmptyLocal"/> is true (tests / explicit opt-in only).
+    /// Divergent dirty local never silently overwrites (ADR 0016).
+    /// </summary>
+    public SyncStatus Reconcile(string? syncFolderOverride = null, bool autoRestoreEmptyLocal = false)
     {
         lock (_gate)
         {
@@ -330,7 +373,7 @@ public sealed class SnapshotService
 
             if (syncFolder is null)
             {
-                _lastStatus = new SyncStatus
+                _lastStatus = EnrichStatus(new SyncStatus
                 {
                     Kind = SyncStatusKind.Unavailable,
                     Message = "OneDrive snapshot folder is not configured or unavailable.",
@@ -339,7 +382,7 @@ public sealed class SnapshotService
                     LocalDirty = lineage.Dirty,
                     Conflict = lineage.Conflict,
                     LastSnapshotAt = lineage.LastSnapshotAt,
-                };
+                });
                 return _lastStatus;
             }
 
@@ -350,7 +393,7 @@ public sealed class SnapshotService
             }
             catch (Exception ex)
             {
-                _lastStatus = new SyncStatus
+                _lastStatus = EnrichStatus(new SyncStatus
                 {
                     Kind = SyncStatusKind.Unavailable,
                     Message = "Sync folder offline or unreadable: " + ex.Message,
@@ -358,14 +401,14 @@ public sealed class SnapshotService
                     LocalRevision = lineage.Revision,
                     LocalDirty = lineage.Dirty,
                     LastSnapshotAt = lineage.LastSnapshotAt,
-                };
+                });
                 return _lastStatus;
             }
 
             var latest = snapshots.FirstOrDefault();
             if (latest is null)
             {
-                _lastStatus = new SyncStatus
+                _lastStatus = EnrichStatus(new SyncStatus
                 {
                     Kind = lineage.Revision > 0 ? SyncStatusKind.LocalAhead : SyncStatusKind.Idle,
                     Message = lineage.Revision > 0
@@ -375,7 +418,7 @@ public sealed class SnapshotService
                     LocalRevision = lineage.Revision,
                     LocalDirty = lineage.Dirty,
                     LastSnapshotAt = lineage.LastSnapshotAt,
-                };
+                });
                 return _lastStatus;
             }
 
@@ -388,6 +431,26 @@ public sealed class SnapshotService
             var localEmpty = IsLocalDatabaseEmpty();
             if (localEmpty)
             {
+                if (!autoRestoreEmptyLocal)
+                {
+                    lineage.Conflict = null;
+                    _lineage.Save(lineage);
+                    _lastStatus = EnrichStatus(new SyncStatus
+                    {
+                        Kind = SyncStatusKind.CloudAhead,
+                        Message =
+                            $"Local database is empty; cloud snapshot {latest.SnapshotId} (revision {latest.Revision}) is available to continue.",
+                        SyncFolder = syncFolder,
+                        LocalRevision = 0,
+                        LatestCloudRevision = latest.Revision,
+                        LatestCloudSnapshotId = latest.SnapshotId,
+                        LocalDirty = false,
+                        LastSnapshotAt = latest.CreatedAt,
+                        ContinueFromBackupAvailable = true,
+                    });
+                    return _lastStatus;
+                }
+
                 try
                 {
                     RestoreSnapshot(latest.SnapshotId, syncFolder, allowDuringConflict: true);
@@ -395,7 +458,7 @@ public sealed class SnapshotService
                 }
                 catch (Exception ex)
                 {
-                    _lastStatus = new SyncStatus
+                    _lastStatus = EnrichStatus(new SyncStatus
                     {
                         Kind = SyncStatusKind.Conflict,
                         Message = "Failed to restore cloud snapshot onto empty local DB: " + ex.Message,
@@ -411,7 +474,7 @@ public sealed class SnapshotService
                             CloudSnapshotId = latest.SnapshotId,
                             LocalRevision = 0,
                         },
-                    };
+                    });
                     return _lastStatus;
                 }
             }
@@ -462,7 +525,7 @@ public sealed class SnapshotService
             {
                 lineage.Conflict = null;
                 _lineage.Save(lineage);
-                _lastStatus = new SyncStatus
+                _lastStatus = EnrichStatus(new SyncStatus
                 {
                     Kind = SyncStatusKind.LocalAhead,
                     Message = $"Local revision {lineage.Revision} is ahead of cloud {latest.Revision}.",
@@ -472,7 +535,7 @@ public sealed class SnapshotService
                     LatestCloudSnapshotId = latest.SnapshotId,
                     LocalDirty = lineage.Dirty,
                     LastSnapshotAt = lineage.LastSnapshotAt,
-                };
+                });
                 return _lastStatus;
             }
 
@@ -518,7 +581,7 @@ public sealed class SnapshotService
 
             lineage.Conflict = null;
             _lineage.Save(lineage);
-            _lastStatus = new SyncStatus
+            _lastStatus = EnrichStatus(new SyncStatus
             {
                 Kind = effectiveDirty ? SyncStatusKind.LocalAhead : SyncStatusKind.InSync,
                 Message = effectiveDirty
@@ -530,7 +593,7 @@ public sealed class SnapshotService
                 LatestCloudSnapshotId = latest.SnapshotId,
                 LocalDirty = effectiveDirty,
                 LastSnapshotAt = lineage.LastSnapshotAt,
-            };
+            });
             return _lastStatus;
         }
     }
@@ -552,7 +615,12 @@ public sealed class SnapshotService
         {
             var lineage = _lineage.Load();
             var folder = TryGetSyncFolder();
-            return new SyncStatus
+            var continueOffer = _lastStatus.ContinueFromBackupAvailable
+                || (IsLocalDatabaseEmpty()
+                    && !string.IsNullOrWhiteSpace(
+                        _lastStatus.LatestCloudSnapshotId ?? lineage.LastKnownCloudSnapshotId)
+                    && folder is not null);
+            return EnrichStatus(new SyncStatus
             {
                 Kind = _lastStatus.Kind,
                 Message = _lastStatus.Message,
@@ -562,8 +630,9 @@ public sealed class SnapshotService
                 LatestCloudSnapshotId = _lastStatus.LatestCloudSnapshotId ?? lineage.LastKnownCloudSnapshotId,
                 LocalDirty = lineage.Dirty,
                 Conflict = lineage.Conflict ?? _lastStatus.Conflict,
-                LastSnapshotAt = lineage.LastSnapshotAt,
-            };
+                LastSnapshotAt = lineage.LastSnapshotAt ?? _lastStatus.LastSnapshotAt,
+                ContinueFromBackupAvailable = continueOffer,
+            });
         }
     }
 
@@ -606,14 +675,43 @@ public sealed class SnapshotService
         }
     }
 
-    private static SyncStatus BuildStatus(
+    private SyncStatus EnrichStatus(SyncStatus status)
+    {
+        var quiet = _options.QuietPeriod;
+        var quietLabel = quiet.TotalMinutes >= 1
+            ? $"auto-backup after {quiet.TotalMinutes:0.#}m quiet"
+            : $"auto-backup after {quiet.TotalSeconds:0}s quiet";
+        return new SyncStatus
+        {
+            Kind = status.Kind,
+            Message = status.Message,
+            SyncFolder = status.SyncFolder,
+            LocalRevision = status.LocalRevision,
+            LatestCloudRevision = status.LatestCloudRevision,
+            LatestCloudSnapshotId = status.LatestCloudSnapshotId,
+            LocalDirty = status.LocalDirty,
+            Conflict = status.Conflict,
+            LastSnapshotAt = status.LastSnapshotAt,
+            DeviceId = _deviceId,
+            ContinueFromBackupAvailable = status.ContinueFromBackupAvailable,
+            AutoBackupHint = string.IsNullOrWhiteSpace(status.SyncFolder)
+                ? "Backup folder not configured."
+                : status.Kind == SyncStatusKind.Unavailable
+                    ? "Backup unavailable (folder offline)."
+                    : status.LocalDirty || status.Kind == SyncStatusKind.LocalAhead
+                        ? $"Pending changes · {quietLabel}"
+                        : quietLabel,
+        };
+    }
+
+    private SyncStatus BuildStatus(
         SyncStatusKind kind,
         string message,
         string syncFolder,
         SyncLineageState lineage,
         SnapshotManifest? latest)
     {
-        return new SyncStatus
+        return EnrichStatus(new SyncStatus
         {
             Kind = kind,
             Message = message,
@@ -624,7 +722,7 @@ public sealed class SnapshotService
             LocalDirty = lineage.Dirty,
             Conflict = lineage.Conflict,
             LastSnapshotAt = lineage.LastSnapshotAt,
-        };
+        });
     }
 
     private static bool IsAncestor(

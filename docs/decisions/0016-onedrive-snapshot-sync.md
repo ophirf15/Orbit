@@ -20,4 +20,10 @@ Users need continuity across company machines that already sync via OneDrive. Pl
 
 ## Consequences
 
-CI proves snapshot, empty-machine restore, divergent conflict, corrupt rejection, and older restore with temp folders. Users must pick a OneDrive-synced path in Settings (manual TODO). Real-time multi-writer merge and email binary blob sync remain out of scope.
+CI proves snapshot, empty-machine continue/restore, divergent conflict, corrupt rejection, and older restore with temp folders. Users pick a OneDrive-synced path in Settings via folder picker; App validates writability. Empty local + existing snapshots surfaces a shell **Continue from OneDrive backup** choice (no silent overwrite); restore reuses `RestoreSnapshot` / sync restore API. Real-time multi-writer merge and email binary blob sync remain out of scope.
+
+## UX note (Phase 3 / 2026-08-12)
+
+- Settings shows resolved folder path, device id, last snapshot time, conflict state, and auto-backup hint (hosted quiet-period).
+- Host reconcile does **not** auto-restore onto an empty local DB; it sets `continueFromBackupAvailable` so the App can prompt.
+- Safe auto-restore still applies for non-empty local when cloud is ahead and local lineage is a clean ancestor (unchanged ADR rule).

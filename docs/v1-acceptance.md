@@ -23,7 +23,7 @@ V1 definition (from `18_HARDENING.md`): Orbit usable daily for real onboarding w
 | 15 | New custom field/view through Hermes | Automated (tools) / Manual (live Hermes tool call) | `MalleabilityApiTests`; live tools → Phase 10/15 TODO |
 | 16 | Generate Orbit-owned summary file | Automated | `HostApiIntegrationTests.FilesWrite_AllowsGeneratedChild`; artifacts under generated root |
 | 17 | Original project files unchanged | Automated | `HardeningTests` / `FileCapabilityTests` external mutate 403; PathGuard |
-| 18 | Snapshot to OneDrive + restore on second profile | Automated (local sync folder) / Manual (real OneDrive path) | `SnapshotServiceTests` conflict/corrupt/restore; Settings OneDrive folder → Phase 14 TODO |
+| 18 | Snapshot to OneDrive + restore on second profile | Automated (local sync folder) / Manual (real OneDrive path) | `SnapshotServiceTests` continue-offer + restore; Settings folder picker + shell Continue gate → Phase 3 |
 | 19 | Publish app update + upgrade installed build | Automated (checker/packaging smoke) / Blocked-TODO (signing + store trust) | Phase 17 update tests + workflow; cert/App Installer → Phase 17 TODO |
 
 ## Security / recovery proofs (Phase 18)

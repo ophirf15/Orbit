@@ -260,7 +260,7 @@ public sealed class ProjectContextVm
 
     public IList<ContextNoteVm> Notes { get; set; } = [];
 
-    public IList<string> Blockers { get; set; } = [];
+    public IList<ContextBlockerVm> Blockers { get; set; } = [];
 
     public IList<ContextContactVm> Contacts { get; set; } = [];
 
@@ -321,6 +321,19 @@ public sealed class ContextNoteVm
     public string CreatedAt { get; set; } = string.Empty;
 }
 
+public sealed class ContextBlockerVm
+{
+    public string Id { get; set; } = string.Empty;
+
+    public string Summary { get; set; } = string.Empty;
+
+    public string Status { get; set; } = string.Empty;
+
+    public string? TaskId { get; set; }
+
+    public string? CreatedAt { get; set; }
+}
+
 public sealed class ContextSuggestionVm
 {
     public string Id { get; set; } = string.Empty;
@@ -359,6 +372,8 @@ public sealed class TaskLinkVm
     public string? Expects { get; set; }
 
     public string? Reason { get; set; }
+
+    public string? CreatedAt { get; set; }
 
     /// <summary>The counterpart task is complete, so a gating edge is cleared.</summary>
     public bool Satisfied { get; set; }

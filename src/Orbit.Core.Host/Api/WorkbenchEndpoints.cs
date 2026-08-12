@@ -1,6 +1,8 @@
 using Orbit.Core.Host;
 using Orbit.Core.Host.Auth;
 using Orbit.Core.Host.Events;
+using Orbit.Core.Workbench;
+using Orbit.Infrastructure.Changes;
 using Orbit.Infrastructure.Data;
 
 namespace Orbit.Core.Host.Api;
@@ -611,6 +613,7 @@ public static class WorkbenchEndpoints
                     summary = b.Summary,
                     status = b.Status,
                     taskId = b.TaskId,
+                    createdAt = b.CreatedAt,
                 }),
                 contacts = context.Contacts.Select(c => new
                 {
@@ -668,6 +671,49 @@ public static class WorkbenchEndpoints
                 sourceKind = task.SourceKind,
                 sourceConfidence = task.SourceConfidence,
                 sourceMatchReason = task.SourceMatchReason,
+                requestId,
+            });
+        });
+
+        app.MapGet(HostEndpoints.TaskHistory, (string id, TaskHistoryReadStore history, HttpContext http, int? limit = null) =>
+        {
+            var requestId = ApiKeyMiddleware.GetRequestId(http);
+            if (string.IsNullOrWhiteSpace(id))
+            {
+                return Results.Json(
+                    ApiErrors.Create(ApiErrorCodes.BadRequest, "task id is required.", requestId),
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            var facts = history.ListFacts(id, limit ?? 120);
+            if (facts.Count == 0)
+            {
+                return Results.Json(
+                    ApiErrors.Create(ApiErrorCodes.NotFound, "Task was not found.", requestId),
+                    statusCode: StatusCodes.Status404NotFound);
+            }
+
+            var lines = TaskTimelineMapper.Map(facts, limit: limit ?? TaskTimelineMapper.DefaultLimit);
+            return Results.Json(new
+            {
+                taskId = id.Trim(),
+                facts = facts.Select(f => new
+                {
+                    kind = f.Kind,
+                    at = f.At,
+                    summary = f.Summary,
+                    detail = f.Detail,
+                    statusLabel = f.StatusLabel,
+                    sourceEvent = f.SourceEvent,
+                    dedupeKey = f.DedupeKey,
+                }),
+                lines = lines.Select(l => new
+                {
+                    kind = l.Kind,
+                    at = l.At,
+                    whenLabel = l.WhenLabel,
+                    text = l.Text,
+                }),
                 requestId,
             });
         });

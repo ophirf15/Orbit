@@ -13,7 +13,7 @@
     <Grid Padding="6">
         <Border
             Background="{ThemeResource OrbitDetailSurfaceBrush}"
-            BorderBrush="{ThemeResource OrbitCellAccentBrush}"
+            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
             BorderThickness="1.5"
             CornerRadius="16">
             <Grid Margin="1.5" RowSpacing="0">

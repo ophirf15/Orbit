@@ -32,6 +32,12 @@ public sealed class OrbitSettings
     /// <summary>User-selected OneDrive snapshot folder; null/empty until configured.</summary>
     public string? OneDriveSnapshotFolder { get; set; }
 
+    /// <summary>
+    /// When true, shell skips the empty-local “Continue from OneDrive backup” prompt
+    /// (user chose Start fresh). Cleared when the sync folder changes or restore succeeds.
+    /// </summary>
+    public bool SkipEmptyBackupContinue { get; set; }
+
     /// <summary>Stable device id for snapshot lineage; generated once and persisted.</summary>
     public string DeviceId { get; set; } = string.Empty;
 

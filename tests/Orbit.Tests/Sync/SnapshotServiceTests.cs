@@ -26,7 +26,7 @@ public sealed class SnapshotServiceTests
     }
 
     [Fact]
-    public void RestoreSnapshot_OntoEmptyLocal_RestoresData()
+    public void Reconcile_EmptyLocal_OffersContinue_WithoutSilentRestore()
     {
         using var env = new SyncTestEnv();
         SeedNote(env.Factory, "cloud note");
@@ -57,14 +57,80 @@ public sealed class SnapshotServiceTests
             () => env.SyncFolder);
 
         var status = fresh.Reconcile(env.SyncFolder);
-        Assert.Equal(SyncStatusKind.RestoredFromCloud, status.Kind);
+        Assert.Equal(SyncStatusKind.CloudAhead, status.Kind);
+        Assert.True(status.ContinueFromBackupAvailable);
+        Assert.Equal(manifest.SnapshotId, status.LatestCloudSnapshotId);
+        Assert.False(File.Exists(emptyFactory.DatabasePath));
 
+        // Explicit restore (same path App uses after Continue).
+        fresh.RestoreSnapshot(manifest.SnapshotId, env.SyncFolder);
         using var connection = emptyFactory.CreateConnection();
         using var cmd = connection.CreateCommand();
         cmd.CommandText = "SELECT COUNT(*) FROM notes WHERE original_text = $t;";
         cmd.Parameters.AddWithValue("$t", "cloud note");
         Assert.Equal(1L, Convert.ToInt64(cmd.ExecuteScalar()));
         Assert.Equal(manifest.Revision, emptyLineage.Load().Revision);
+    }
+
+    [Fact]
+    public void Reconcile_EmptyLocal_AutoRestore_WhenOptedIn()
+    {
+        using var env = new SyncTestEnv();
+        SeedNote(env.Factory, "cloud note");
+        var manifest = env.Service.CreateSnapshot(env.SyncFolder);
+
+        SqliteConnection.ClearAllPools();
+        foreach (var suffix in new[] { "", "-wal", "-shm" })
+        {
+            var path = env.Factory.DatabasePath + suffix;
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+
+        File.Delete(env.Lineage.FilePath);
+        Directory.CreateDirectory(env.DataRoot);
+
+        var emptyFactory = new SqliteConnectionFactory(env.Factory.DatabasePath);
+        var emptyLineage = new SyncLineageStore(env.DataRoot);
+        var fresh = new SnapshotService(
+            emptyFactory,
+            emptyLineage,
+            env.DataRoot,
+            Guid.NewGuid().ToString("N"),
+            "new-machine",
+            () => env.SyncFolder);
+
+        var status = fresh.Reconcile(env.SyncFolder, autoRestoreEmptyLocal: true);
+        Assert.Equal(SyncStatusKind.RestoredFromCloud, status.Kind);
+        Assert.Equal(manifest.Revision, emptyLineage.Load().Revision);
+    }
+
+    [Fact]
+    public void TryValidateSyncFolderWritable_AcceptsWritableFolder()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "OrbitSyncWriteProbe", Guid.NewGuid().ToString("N"));
+        try
+        {
+            Assert.True(SnapshotService.TryValidateSyncFolderWritable(root, out var error), error);
+            Assert.Null(error);
+            Assert.True(Directory.Exists(Path.Combine(root, SnapshotService.SnapshotsFolderName)));
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(root))
+                {
+                    Directory.Delete(root, recursive: true);
+                }
+            }
+            catch (IOException)
+            {
+                // best-effort
+            }
+        }
     }
 
     [Fact]
