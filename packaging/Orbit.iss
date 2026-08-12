@@ -47,11 +47,11 @@ VersionInfoVersion={#MyAppVersion}.0
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoProductName={#MyAppName}
 MinVersion=10.0.17763
-CloseApplications=yes
+CloseApplications=no
 RestartApplications=no
-; Host + MCP are separate processes; Restart Manager alone often leaves them locking DLLs
-; under {app} and %LocalAppData%\Orbit\orbit-mcp (Hermes). PrepareToInstall taskkills them.
-; Avoid CloseApplications=force — it can abort silent upgrades when elevation races the App exit.
+; In-app updates exit Orbit.App first, then elevate setup (see OrbitSetupUpdateApplier).
+; Host + MCP are killed in PrepareToInstall — do not rely on Restart Manager /CLOSEAPPLICATIONS
+; (silent + elevation races abort the installer when the App exits mid-UAC).
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

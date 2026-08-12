@@ -1,12 +1,14 @@
 using System.Diagnostics;
 using System.Net.Http.Headers;
+using System.Text;
 using Orbit.Infrastructure.Diagnostics;
 
 namespace Orbit.Infrastructure.Updates;
 
 /// <summary>
-/// Downloads the GitHub-hosted Inno <c>Orbit-Setup-*.exe</c> and launches an elevated
-/// in-place upgrade (same AppId — replaces Program Files without uninstall).
+/// Downloads the GitHub-hosted Inno <c>Orbit-Setup-*.exe</c> and schedules an elevated
+/// in-place upgrade that starts only after Orbit.App has fully exited (avoids UAC cancel
+/// when the requesting process dies, and avoids /CLOSEAPPLICATIONS racing the App).
 /// </summary>
 public sealed class OrbitSetupUpdateApplier : IDisposable
 {
@@ -103,33 +105,18 @@ public sealed class OrbitSetupUpdateApplier : IDisposable
             }
 
             MotwUnblocker.UnblockFile(target);
-            OrbitProcessShutdown.KillOrbitRelated(TimeSpan.FromSeconds(2));
-            OrbitProcessShutdown.QuarantineMcpDirectoryIfNeeded();
-            OrbitProcessShutdown.KillOrbitRelated(TimeSpan.FromSeconds(1));
 
-            var start = new ProcessStartInfo
+            // Do NOT elevate from this process and then Exit — Windows cancels pending UAC
+            // when the requester dies, which looks like "app and installer both force-closed".
+            // Schedule a detached helper that waits for Orbit.App to exit, then RunAs setup.
+            if (!TryScheduleDeferredElevatedSetup(target, out var scheduleError))
             {
-                FileName = target,
-                // Avoid FORCECLOSEAPPLICATIONS — it races UAC and can abort elevated setup.
-                Arguments = "/SILENT /NORESTART /SUPPRESSMSGBOXES /CLOSEAPPLICATIONS",
-                UseShellExecute = true,
-                Verb = "runas",
-            };
-
-            try
-            {
-                Process.Start(start);
-            }
-            catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
-            {
-                return (
-                    false,
-                    "Update cancelled — UAC elevation was denied. Approve the prompt, or install Orbit-Setup from GitHub manually.");
+                return (false, scheduleError);
             }
 
             return (
                 true,
-                "Setup launched (elevated). Orbit will close so files can update — reopen from Start when finished.");
+                "Update queued. Orbit will close; approve the UAC prompt when it appears, then reopen Orbit from Start.");
         }
         catch (OperationCanceledException)
         {
@@ -140,6 +127,96 @@ public sealed class OrbitSetupUpdateApplier : IDisposable
             return (false, "Could not download or launch setup: " + ex.Message);
         }
     }
+
+    /// <summary>
+    /// Writes a PowerShell helper under %TEMP%\OrbitUpdates and starts it detached.
+    /// The helper waits until Orbit.App is gone, kills Host/MCP, then elevates setup.
+    /// </summary>
+    public static bool TryScheduleDeferredElevatedSetup(string setupExePath, out string error)
+    {
+        error = string.Empty;
+        try
+        {
+            if (!File.Exists(setupExePath))
+            {
+                error = "Setup EXE missing after download.";
+                return false;
+            }
+
+            var dir = Path.GetDirectoryName(setupExePath)
+                      ?? Path.Combine(Path.GetTempPath(), "OrbitUpdates");
+            Directory.CreateDirectory(dir);
+
+            var helperPs1 = Path.Combine(dir, "orbit-run-update.ps1");
+            var logPath = Path.Combine(dir, "orbit-update-helper.log");
+
+            // No /CLOSEAPPLICATIONS — App is already gone; Inno PrepareToInstall kills Host/MCP.
+            const string setupArgs = "/SILENT /NORESTART /SUPPRESSMSGBOXES";
+
+            var ps = new StringBuilder();
+            ps.AppendLine("$ErrorActionPreference = 'Stop'");
+            ps.AppendLine("$log = " + PsSingleQuoted(logPath));
+            ps.AppendLine("$setup = " + PsSingleQuoted(setupExePath));
+            ps.AppendLine("$setupArgs = " + PsSingleQuoted(setupArgs));
+            ps.AppendLine("function Write-Log([string] $msg) {");
+            ps.AppendLine("  Add-Content -LiteralPath $log -Value ('[' + (Get-Date -Format o) + '] ' + $msg)");
+            ps.AppendLine("}");
+            ps.AppendLine("Write-Log 'helper start'");
+            ps.AppendLine("while (Get-Process -Name 'Orbit.App' -ErrorAction SilentlyContinue) {");
+            ps.AppendLine("  Start-Sleep -Seconds 1");
+            ps.AppendLine("}");
+            ps.AppendLine("Write-Log 'Orbit.App exited'");
+            ps.AppendLine("Start-Sleep -Seconds 2");
+            ps.AppendLine("foreach ($n in @('Orbit.Core.Host','Orbit.Mcp')) {");
+            ps.AppendLine("  Get-Process -Name $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue");
+            ps.AppendLine("}");
+            ps.AppendLine("Start-Sleep -Seconds 1");
+            ps.AppendLine("try {");
+            ps.AppendLine("  Write-Log 'elevating setup'");
+            ps.AppendLine("  Start-Process -FilePath $setup -ArgumentList $setupArgs -Verb RunAs");
+            ps.AppendLine("  Write-Log 'Start-Process returned'");
+            ps.AppendLine("} catch {");
+            ps.AppendLine("  Write-Log ('ERROR: ' + $_.Exception.Message)");
+            ps.AppendLine("  exit 1");
+            ps.AppendLine("}");
+            File.WriteAllText(helperPs1, ps.ToString(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+            var start = new ProcessStartInfo
+            {
+                // `start` breaks away from Orbit.App's process tree / job so Exit won't cancel UAC.
+                FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
+                Arguments = "/c start \"OrbitUpdate\" /MIN \""
+                            + Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe")
+                            + "\" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \""
+                            + helperPs1
+                            + "\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+            };
+
+            using var proc = Process.Start(start);
+            if (proc is null)
+            {
+                error = "Could not start the deferred update helper.";
+                return false;
+            }
+
+            // Let cmd spawn the breakaway powershell, then return.
+            proc.WaitForExit(8_000);
+
+            OrbitSupportLog.Write("Update", "Deferred update helper scheduled: " + helperPs1);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = "Could not schedule update helper: " + ex.Message;
+            return false;
+        }
+    }
+
+    private static string PsSingleQuoted(string value) =>
+        "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
 
     private static string Truncate(string text, int max)
     {

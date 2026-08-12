@@ -18,12 +18,26 @@ public sealed class Connect : IDTExtensibility2, IRibbonExtensibility, IOrbitRib
 {
     public void OnConnection(object Application, ext_ConnectMode ConnectMode, object AddInInst, ref Array custom)
     {
-        Log("OnConnection " + ConnectMode);
+        try
+        {
+            Log("OnConnection " + ConnectMode);
+        }
+        catch
+        {
+            // Never throw into Outlook — surfaces as "A runtime error occurred while loading the COM add-in".
+        }
     }
 
     public void OnDisconnection(ext_DisconnectMode RemoveMode, ref Array custom)
     {
-        Log("OnDisconnection " + RemoveMode);
+        try
+        {
+            Log("OnDisconnection " + RemoveMode);
+        }
+        catch
+        {
+            // ignore
+        }
     }
 
     public void OnAddInsUpdate(ref Array custom)
@@ -32,7 +46,14 @@ public sealed class Connect : IDTExtensibility2, IRibbonExtensibility, IOrbitRib
 
     public void OnStartupComplete(ref Array custom)
     {
-        Log("OnStartupComplete");
+        try
+        {
+            Log("OnStartupComplete");
+        }
+        catch
+        {
+            // ignore
+        }
     }
 
     public void OnBeginShutdown(ref Array custom)

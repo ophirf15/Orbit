@@ -2,9 +2,13 @@ using System.Runtime.InteropServices;
 
 namespace Extensibility
 {
-    [ComImport]
+    /// <summary>
+    /// Managed IDTExtensibility2 — must NOT use <see cref="ComImportAttribute"/>.
+    /// ComImport means "native COM → RCW"; implementing it from managed code causes
+    /// Outlook "A runtime error occurred while loading the COM add-in".
+    /// </summary>
+    [ComVisible(true)]
     [Guid("B65AD801-ABAF-11D0-BB8B-00A0C90F2744")]
-    [TypeLibType(TypeLibTypeFlags.FDual | TypeLibTypeFlags.FDispatchable)]
     [InterfaceType(ComInterfaceType.InterfaceIsDual)]
     public interface IDTExtensibility2
     {
@@ -53,9 +57,9 @@ namespace Extensibility
 
 namespace Office
 {
-    [ComImport]
+    /// <summary>Implemented by the add-in — not ComImport.</summary>
+    [ComVisible(true)]
     [Guid("000C0396-0000-0000-C000-000000000046")]
-    [TypeLibType(TypeLibTypeFlags.FDispatchable)]
     [InterfaceType(ComInterfaceType.InterfaceIsDual)]
     public interface IRibbonExtensibility
     {
@@ -64,10 +68,11 @@ namespace Office
         string GetCustomUI([In] [MarshalAs(UnmanagedType.BStr)] string RibbonID);
     }
 
-    /// <summary>Minimal IRibbonControl so onAction callbacks bind in Classic Outlook.</summary>
+    /// <summary>
+    /// Outlook passes this into onAction — ComImport so the CLR marshals the native COM object in.
+    /// </summary>
     [ComImport]
     [Guid("000C0395-0000-0000-C000-000000000046")]
-    [TypeLibType(TypeLibTypeFlags.FDispatchable)]
     [InterfaceType(ComInterfaceType.InterfaceIsDual)]
     public interface IRibbonControl
     {
@@ -95,7 +100,6 @@ namespace Office
 
     [ComImport]
     [Guid("000C03A1-0000-0000-C000-000000000046")]
-    [TypeLibType(TypeLibTypeFlags.FDispatchable)]
     [InterfaceType(ComInterfaceType.InterfaceIsDual)]
     public interface IRibbonUI
     {

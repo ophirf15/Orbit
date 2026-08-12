@@ -75,18 +75,26 @@ public static class UpdateUiService
                 .ConfigureAwait(false);
             if (launch.Ok)
             {
-                // Give elevated setup a moment to start, then exit so Program Files unlocks.
+                // Helper is already waiting for Orbit.App to exit, then shows UAC.
+                // Exit promptly — do not elevate from this process (UAC cancels if we die mid-prompt).
                 _ = Task.Run(async () =>
                 {
                     try
                     {
-                        await Task.Delay(1500).ConfigureAwait(false);
-                        OrbitProcessShutdown.KillOrbitRelated(TimeSpan.FromMilliseconds(500));
+                        await Task.Delay(800).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // ignore
+                    }
+
+                    try
+                    {
                         Environment.Exit(0);
                     }
                     catch
                     {
-                        Environment.Exit(0);
+                        // ignore
                     }
                 });
             }

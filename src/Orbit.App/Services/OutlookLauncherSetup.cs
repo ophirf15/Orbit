@@ -104,10 +104,10 @@ public static class OutlookLauncherSetup
             OrbitPushActivation.EnsureProtocolRegistered();
 
             var restart = IsOutlookRunning()
-                    ? " Close Classic Outlook completely (tray too), then reopen. If COM Add-ins flips Orbit off immediately, Outlook failed to load the DLL — close Outlook, Install again, then reopen (file locks while Outlook is open are the usual cause)."
-                : " Start Classic Outlook. If it warns about slow startup, choose Always enable. File → Options → Add-ins → COM Add-ins should show Orbit checked.";
+                    ? " Close Classic Outlook completely (tray too), then reopen. If Outlook reports a runtime error or flips Orbit off, close Outlook, Install again, then reopen."
+                : " Start Classic Outlook. If it warns about slow startup, choose Always enable. If it reports a runtime error, close Outlook and Install again after this Orbit build.";
 
-            return new Result(true, "Outlook add-in installed (64-bit Classic M365 + registry dual-write)." + restart);
+            return new Result(true, "Outlook add-in installed." + restart);
         }
         catch (Exception ex)
         {
@@ -360,7 +360,8 @@ public static class OutlookLauncherSetup
     private static void RegisterCom(string dllPath)
     {
         var codeBase = new Uri(dllPath).AbsoluteUri;
-        var asmName = $"Orbit.OutlookLauncher, Version={AssemblyVersion}, Culture=neutral, PublicKeyToken=null";
+        var version = ReadAssemblyVersion(dllPath) ?? AssemblyVersion;
+        var asmName = $"Orbit.OutlookLauncher, Version={version}, Culture=neutral, PublicKeyToken=null";
 
         // Register CLSID in both registry views — covers 64-bit M365 Classic and any 32-bit Outlook.
         foreach (var view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
@@ -378,7 +379,7 @@ public static class OutlookLauncherSetup
             SetNetComInproc(hive, @"Software\Classes\CLSID\" + Clsid + @"\InprocServer32", asmName, codeBase);
             SetNetComInproc(
                 hive,
-                @"Software\Classes\CLSID\" + Clsid + @"\InprocServer32\" + AssemblyVersion,
+                @"Software\Classes\CLSID\" + Clsid + @"\InprocServer32\" + version,
                 asmName,
                 codeBase);
 
@@ -557,6 +558,19 @@ public static class OutlookLauncherSetup
         catch
         {
             // ignore
+        }
+    }
+
+    private static string? ReadAssemblyVersion(string dllPath)
+    {
+        try
+        {
+            var name = System.Reflection.AssemblyName.GetAssemblyName(dllPath);
+            return name.Version?.ToString();
+        }
+        catch
+        {
+            return null;
         }
     }
 }
