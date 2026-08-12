@@ -71,8 +71,27 @@ public static class UpdateUiService
         if (!string.IsNullOrWhiteSpace(result.SetupInstallerUrl))
         {
             using var applier = new OrbitSetupUpdateApplier();
-            return await applier.DownloadAndLaunchAsync(result.SetupInstallerUrl, cancellationToken)
+            var launch = await applier.DownloadAndLaunchAsync(result.SetupInstallerUrl, cancellationToken)
                 .ConfigureAwait(false);
+            if (launch.Ok)
+            {
+                // Give elevated setup a moment to start, then exit so Program Files unlocks.
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(1500).ConfigureAwait(false);
+                        OrbitProcessShutdown.KillOrbitRelated(TimeSpan.FromMilliseconds(500));
+                        Environment.Exit(0);
+                    }
+                    catch
+                    {
+                        Environment.Exit(0);
+                    }
+                });
+            }
+
+            return launch;
         }
 
         var uri = result.AppInstallerUrl

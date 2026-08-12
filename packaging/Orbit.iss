@@ -47,10 +47,11 @@ VersionInfoVersion={#MyAppVersion}.0
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoProductName={#MyAppName}
 MinVersion=10.0.17763
-CloseApplications=force
+CloseApplications=yes
 RestartApplications=no
 ; Host + MCP are separate processes; Restart Manager alone often leaves them locking DLLs
-; under {app} and %LocalAppData%\Orbit\orbit-mcp (Hermes).
+; under {app} and %LocalAppData%\Orbit\orbit-mcp (Hermes). PrepareToInstall taskkills them.
+; Avoid CloseApplications=force — it can abort silent upgrades when elevation races the App exit.
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -80,12 +81,45 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 procedure KillOrbitProcesses;
 var
   ResultCode: Integer;
+  Cmd: String;
 begin
-  { App / Host / MCP can each lock setup destinations (Program Files + LocalAppData). }
+  { Multi-pass kill — Hermes often respawns Orbit.Mcp and holds clrjit.dll under LocalAppData. }
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM Orbit.App.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM Orbit.Core.Host.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM Orbit.Mcp.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Sleep(1500);
+  Sleep(1000);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM Orbit.Mcp.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM Orbit.Core.Host.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  { Command-line match catches MCP launched via `dotnet` / Hermes when image name differs. }
+  Cmd := '-NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -and (($_.CommandLine -like ''*Orbit.Mcp*'') -or ($_.CommandLine -like ''*\Orbit\orbit-mcp\*'') -or ($_.ExecutablePath -like ''*\Orbit\orbit-mcp\*'') -or ($_.ExecutablePath -like ''*\Program Files\Orbit\*'')) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"';
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Cmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(2000);
+end;
+
+procedure QuarantineLocalMcp;
+var
+  ResultCode: Integer;
+  McpDir, BakDir, Cmd: String;
+begin
+  { If orbit-mcp is still locked after kill, move it aside so Files: can create a fresh tree. }
+  McpDir := ExpandConstant('{localappdata}\Orbit\orbit-mcp');
+  if DirExists(McpDir) then
+  begin
+    BakDir := McpDir + '.old.' + GetDateTimeString('yyyymmddhhnnss', #0, #0);
+    Cmd := '/c move /Y "' + McpDir + '" "' + BakDir + '"';
+    Exec(ExpandConstant('{cmd}'), Cmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
+end;
+
+procedure UnblockOrbitFiles;
+var
+  ResultCode: Integer;
+  Cmd: String;
+begin
+  { Strip Mark-of-the-Web (separate from file-lock unlock). }
+  Cmd := '-NoProfile -NonInteractive -Command "Get-ChildItem -LiteralPath ''' + ExpandConstant('{app}') + ''' -Recurse -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue; Get-ChildItem -LiteralPath ''' + ExpandConstant('{localappdata}\Orbit') + ''' -Recurse -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue"';
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Cmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
 function InitializeSetup(): Boolean;
@@ -97,7 +131,15 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   NeedsRestart := False;
   KillOrbitProcesses;
+  QuarantineLocalMcp;
+  KillOrbitProcesses;
   Result := '';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    UnblockOrbitFiles;
 end;
 
 function InitializeUninstall(): Boolean;

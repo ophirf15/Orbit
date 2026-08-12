@@ -96,9 +96,35 @@ if (-not (Test-Path $builtDll)) {
 
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 Copy-Item (Join-Path $sourceDir "*") $installDir -Force
+Get-ChildItem -LiteralPath $installDir -Recurse -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
 
 $codeBase = ([Uri]$dll).AbsoluteUri
 $asmName = "Orbit.OutlookLauncher, Version=$assemblyVersion, Culture=neutral, PublicKeyToken=null"
+
+# Register for both 64-bit and 32-bit Outlook (Classic Outlook 365 is often 32-bit).
+$regViews = @([Microsoft.Win32.RegistryHive]::CurrentUser)
+# Use both Wow6432Node and native Classes via .NET for reliability from 64-bit PowerShell:
+function Set-ComForView([Microsoft.Win32.RegistryView] $view) {
+    $hive = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, $view)
+    $cls = $hive.CreateSubKey("Software\Classes\CLSID\$clsid")
+    $cls.SetValue("", "Orbit Outlook Launcher")
+    [void]$cls.CreateSubKey("Programmable")
+    foreach ($sub in @("InprocServer32", "InprocServer32\$assemblyVersion")) {
+        $ip = $hive.CreateSubKey("Software\Classes\CLSID\$clsid\$sub")
+        $ip.SetValue("", "mscoree.dll")
+        $ip.SetValue("Assembly", $asmName)
+        $ip.SetValue("Class", "Orbit.OutlookLauncher.Connect")
+        $ip.SetValue("RuntimeVersion", "v4.0.30319")
+        $ip.SetValue("ThreadingModel", "Both")
+        $ip.SetValue("CodeBase", $codeBase)
+    }
+    $hive.CreateSubKey("Software\Classes\CLSID\$clsid\Implemented Categories\{B65AD801-ABAF-11D0-BB8B-00A0C90F2744}") | Out-Null
+    $pidKey = $hive.CreateSubKey("Software\Classes\CLSID\$clsid\ProgId")
+    $pidKey.SetValue("", $progId)
+    $prog = $hive.CreateSubKey("Software\Classes\$progId")
+    $prog.SetValue("", $progId)
+    $prog.CreateSubKey("CLSID").SetValue("", $clsid)
+}
 
 if (-not (Test-Path $lockbackKey)) {
     New-Item -Path $lockbackKey -Force | Out-Null
@@ -106,49 +132,31 @@ if (-not (Test-Path $lockbackKey)) {
 }
 
 Clear-OutlookQuarantine
+Set-ComForView ([Microsoft.Win32.RegistryView]::Registry64)
+Set-ComForView ([Microsoft.Win32.RegistryView]::Registry32)
 
-Remove-Item $clsKey -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -Path $clsKey -Force | Out-Null
-Set-ItemProperty -Path $clsKey -Name "(default)" -Value "Orbit Outlook Launcher"
-New-Item -Path "$clsKey\Programmable" -Force | Out-Null
-
-function Set-NetComInproc([string] $keyPath) {
-    New-Item -Path $keyPath -Force | Out-Null
-    Set-ItemProperty -Path $keyPath -Name "(default)" -Value "mscoree.dll"
-    Set-ItemProperty -Path $keyPath -Name "Assembly" -Value $asmName
-    Set-ItemProperty -Path $keyPath -Name "Class" -Value "Orbit.OutlookLauncher.Connect"
-    Set-ItemProperty -Path $keyPath -Name "RuntimeVersion" -Value "v4.0.30319"
-    Set-ItemProperty -Path $keyPath -Name "ThreadingModel" -Value "Both"
-    Set-ItemProperty -Path $keyPath -Name "CodeBase" -Value $codeBase
+foreach ($addPath in @(
+    "Software\Microsoft\Office\Outlook\Addins\$progId",
+    "Software\Microsoft\Office\16.0\Outlook\Addins\$progId"
+)) {
+    foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32)) {
+        $hive = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, $view)
+        $k = $hive.CreateSubKey($addPath)
+        $k.SetValue("FriendlyName", "Orbit")
+        $k.SetValue("Description", "Send selected mail to the Orbit app (launch only)")
+        $k.SetValue("LoadBehavior", 3, [Microsoft.Win32.RegistryValueKind]::DWord)
+    }
 }
 
-Set-NetComInproc "$clsKey\InprocServer32"
-Set-NetComInproc "$clsKey\InprocServer32\$assemblyVersion"
-New-Item -Path "$clsKey\Implemented Categories\{B65AD801-ABAF-11D0-BB8B-00A0C90F2744}" -Force | Out-Null
-New-Item -Path "$clsKey\ProgId" -Force | Out-Null
-Set-ItemProperty -Path "$clsKey\ProgId" -Name "(default)" -Value $progId
-
-New-Item -Path $progKey -Force | Out-Null
-Set-ItemProperty -Path $progKey -Name "(default)" -Value "Orbit.OutlookLauncher.Connect"
-New-Item -Path "$progKey\CLSID" -Force | Out-Null
-Set-ItemProperty -Path "$progKey\CLSID" -Name "(default)" -Value $clsid
-
-New-Item -Path $addinKey -Force | Out-Null
-Set-ItemProperty -Path $addinKey -Name "FriendlyName" -Value "Orbit"
-Set-ItemProperty -Path $addinKey -Name "Description" -Value "Send selected mail to the Orbit app (launch only)"
-Set-ItemProperty -Path $addinKey -Name "LoadBehavior" -Value 3 -Type DWord
-
-# Pin again after LoadBehavior write (Outlook slow-start quarantine).
 Clear-OutlookQuarantine
-Set-ItemProperty -Path $addinKey -Name "LoadBehavior" -Value 3 -Type DWord
 
 Write-Host ""
-Write-Host "Registered: $progId"
+Write-Host "Registered: $progId (32+64 registry, DLL unblocked)"
 Write-Host "Install dir: $installDir"
 Write-Host ""
 Write-Host "Next:"
 Write-Host "  1. Start Orbit once (registers orbit://push-outlook)."
-Write-Host "  2. Start Classic Outlook."
+Write-Host "  2. Fully quit Classic Outlook (tray), then start it."
 Write-Host "  3. If Outlook says Orbit slows startup, choose Always enable this add-in."
 Write-Host "  4. Mail/Home tab -> Send to Orbit."
 Write-Host "Or use Settings → Classic Outlook add-in → Install / Update."

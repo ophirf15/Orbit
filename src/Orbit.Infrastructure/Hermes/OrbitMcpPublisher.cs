@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using Orbit.Infrastructure.Diagnostics;
+using Orbit.Infrastructure.Updates;
 
 namespace Orbit.Infrastructure.Hermes;
 
@@ -102,8 +104,14 @@ public static class OrbitMcpPublisher
         // Skip no-op copy when already synced to the same folder.
         if (PathsEqual(sourceDir, DefaultPublishDirectory))
         {
+            OrbitProcessShutdown.KillOrbitRelated(TimeSpan.FromMilliseconds(500));
+            MotwUnblocker.UnblockDirectory(DefaultPublishDirectory);
             return true;
         }
+
+        // Hermes may still be holding Orbit.Mcp / clrjit — kill, then rename aside if needed.
+        OrbitProcessShutdown.KillOrbitRelated(TimeSpan.FromSeconds(1));
+        OrbitProcessShutdown.QuarantineMcpDirectoryIfNeeded();
 
         Directory.CreateDirectory(DefaultPublishDirectory);
         foreach (var file in Directory.EnumerateFiles(sourceDir))
@@ -115,10 +123,35 @@ public static class OrbitMcpPublisher
                 continue;
             }
 
-            File.Copy(file, Path.Combine(DefaultPublishDirectory, name), overwrite: true);
+            var dest = Path.Combine(DefaultPublishDirectory, name);
+            TryCopyReplace(file, dest);
+            MotwUnblocker.UnblockFile(dest);
         }
 
+        MotwUnblocker.UnblockDirectory(DefaultPublishDirectory);
         return File.Exists(DefaultExePath) || File.Exists(DefaultDllPath);
+    }
+
+    private static void TryCopyReplace(string source, string dest)
+    {
+        try
+        {
+            File.Copy(source, dest, overwrite: true);
+        }
+        catch (IOException) when (File.Exists(dest))
+        {
+            var bak = dest + ".old." + Guid.NewGuid().ToString("N");
+            try
+            {
+                File.Move(dest, bak);
+            }
+            catch
+            {
+                // ignore — retry copy may still fail
+            }
+
+            File.Copy(source, dest, overwrite: true);
+        }
     }
 
     public static string PublishFrom(string sourcePath)
@@ -138,8 +171,10 @@ public static class OrbitMcpPublisher
             }
 
             File.Copy(file, Path.Combine(DefaultPublishDirectory, name), overwrite: true);
+            MotwUnblocker.UnblockFile(Path.Combine(DefaultPublishDirectory, name));
         }
 
+        MotwUnblocker.UnblockDirectory(DefaultPublishDirectory);
         return isExe ? DefaultExePath : DefaultDllPath;
     }
 

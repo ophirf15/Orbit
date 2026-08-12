@@ -1,11 +1,12 @@
 using System.Diagnostics;
 using System.Net.Http.Headers;
+using Orbit.Infrastructure.Diagnostics;
 
 namespace Orbit.Infrastructure.Updates;
 
 /// <summary>
-/// Downloads the GitHub-hosted Inno <c>Orbit-Setup-*.exe</c> and launches a silent in-place upgrade
-/// (same AppId — replaces Program Files without uninstall).
+/// Downloads the GitHub-hosted Inno <c>Orbit-Setup-*.exe</c> and launches an elevated
+/// in-place upgrade (same AppId — replaces Program Files without uninstall).
 /// </summary>
 public sealed class OrbitSetupUpdateApplier : IDisposable
 {
@@ -90,7 +91,6 @@ public sealed class OrbitSetupUpdateApplier : IDisposable
                 return (false, $"Download failed HTTP {(int)response.StatusCode}: {Truncate(body, 200)}");
             }
 
-            // Redirects may land on the GitHub CDN; reject unexpected final hosts.
             var final = response.RequestMessage?.RequestUri ?? uri;
             if (!IsTrustedReleaseAssetUrl(final.ToString()))
             {
@@ -102,18 +102,34 @@ public sealed class OrbitSetupUpdateApplier : IDisposable
                 await response.Content.CopyToAsync(fs, cancellationToken).ConfigureAwait(false);
             }
 
+            MotwUnblocker.UnblockFile(target);
+            OrbitProcessShutdown.KillOrbitRelated(TimeSpan.FromSeconds(2));
+            OrbitProcessShutdown.QuarantineMcpDirectoryIfNeeded();
+            OrbitProcessShutdown.KillOrbitRelated(TimeSpan.FromSeconds(1));
+
             var start = new ProcessStartInfo
             {
                 FileName = target,
-                // Same AppId → in-place upgrade. Force-close App/Host/MCP (iss also taskkills).
-                Arguments = "/SILENT /FORCECLOSEAPPLICATIONS /NORESTART /SUPPRESSMSGBOXES",
+                // Avoid FORCECLOSEAPPLICATIONS — it races UAC and can abort elevated setup.
+                Arguments = "/SILENT /NORESTART /SUPPRESSMSGBOXES /CLOSEAPPLICATIONS",
                 UseShellExecute = true,
+                Verb = "runas",
             };
 
-            Process.Start(start);
+            try
+            {
+                Process.Start(start);
+            }
+            catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
+            {
+                return (
+                    false,
+                    "Update cancelled — UAC elevation was denied. Approve the prompt, or install Orbit-Setup from GitHub manually.");
+            }
+
             return (
                 true,
-                "Downloading finished. Setup is running a silent upgrade — approve UAC if prompted. Orbit will close briefly and reopen from Start when done.");
+                "Setup launched (elevated). Orbit will close so files can update — reopen from Start when finished.");
         }
         catch (OperationCanceledException)
         {

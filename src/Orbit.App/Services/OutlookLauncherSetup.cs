@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Microsoft.Win32;
+using Orbit.Infrastructure.Diagnostics;
 
 namespace Orbit_App.Services;
 
@@ -87,24 +88,26 @@ public static class OutlookLauncherSetup
                 return new Result(false, stageError);
             }
 
+            MotwUnblocker.UnblockDirectory(InstallDirectory);
+
             // Prefer thin launcher over deprecated ingest COM.
-            TryDeleteRegistryKey(@"Software\Microsoft\Office\Outlook\Addins\Orbit.OutlookAddIn.Connect");
+            TryDeleteRegistryKeyAllViews(@"Software\Microsoft\Office\Outlook\Addins\Orbit.OutlookAddIn.Connect");
+            TryDeleteRegistryKeyAllViews(@"Software\Microsoft\Office\16.0\Outlook\Addins\Orbit.OutlookAddIn.Connect");
 
             EnsureLockbackBypass();
             ClearOutlookQuarantine();
             RegisterCom(InstalledDllPath);
             RegisterAddIn();
-            // Re-assert after quarantine clears — Outlook may have left LoadBehavior=0.
             ForceEnableLoadBehavior();
             PinDoNotDisable();
 
             OrbitPushActivation.EnsureProtocolRegistered();
 
             var restart = IsOutlookRunning()
-                ? " Close and restart Classic Outlook. If Outlook warns that Orbit slows startup, choose Always enable this add-in."
-                : " Start Classic Outlook — if it warns that Orbit slows startup, choose Always enable this add-in. Mail tab → Send to Orbit.";
+                    ? " Close Classic Outlook completely (tray too), then reopen. If COM Add-ins flips Orbit off immediately, Outlook failed to load the DLL — close Outlook, Install again, then reopen (file locks while Outlook is open are the usual cause)."
+                : " Start Classic Outlook. If it warns about slow startup, choose Always enable. File → Options → Add-ins → COM Add-ins should show Orbit checked.";
 
-            return new Result(true, "Outlook add-in installed (kept enabled)." + restart);
+            return new Result(true, "Outlook add-in installed (64-bit Classic M365 + registry dual-write)." + restart);
         }
         catch (Exception ex)
         {
@@ -116,9 +119,11 @@ public static class OutlookLauncherSetup
     {
         try
         {
-            TryDeleteRegistryKey(@"Software\Microsoft\Office\Outlook\Addins\" + ProgId);
-            TryDeleteRegistryKey(@"Software\Classes\CLSID\" + Clsid);
-            TryDeleteRegistryKey(@"Software\Classes\" + ProgId);
+            TryDeleteRegistryKeyAllViews(@"Software\Microsoft\Office\Outlook\Addins\" + ProgId);
+            TryDeleteRegistryKeyAllViews(@"Software\Microsoft\Office\16.0\Outlook\Addins\" + ProgId);
+            TryDeleteRegistryKeyAllViews(@"Software\Microsoft\Office\15.0\Outlook\Addins\" + ProgId);
+            TryDeleteRegistryKeyAllViews(@"Software\Classes\CLSID\" + Clsid);
+            TryDeleteRegistryKeyAllViews(@"Software\Classes\" + ProgId);
             ClearOutlookQuarantine();
 
             if (IsOutlookRunning())
@@ -227,27 +232,43 @@ public static class OutlookLauncherSetup
     /// <summary>Outlook LoadBehavior DWORD, or null if the add-in key is missing.</summary>
     public static int? ReadLoadBehavior()
     {
-        try
+        foreach (var view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
         {
-            using var key = Registry.CurrentUser.OpenSubKey(
-                @"Software\Microsoft\Office\Outlook\Addins\" + ProgId);
-            if (key is null)
+            try
             {
-                return null;
-            }
+                using var hive = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, view);
+                foreach (var path in new[]
+                         {
+                             @"Software\Microsoft\Office\Outlook\Addins\" + ProgId,
+                             @"Software\Microsoft\Office\16.0\Outlook\Addins\" + ProgId,
+                         })
+                {
+                    using var key = hive.OpenSubKey(path);
+                    if (key is null)
+                    {
+                        continue;
+                    }
 
-            var load = key.GetValue("LoadBehavior");
-            return load switch
+                    var load = key.GetValue("LoadBehavior");
+                    var value = load switch
+                    {
+                        int i => i,
+                        long l => (int)l,
+                        _ => (int?)null,
+                    };
+                    if (value is not null)
+                    {
+                        return value;
+                    }
+                }
+            }
+            catch
             {
-                int i => i,
-                long l => (int)l,
-                _ => null,
-            };
+                // try next view
+            }
         }
-        catch
-        {
-            return null;
-        }
+
+        return null;
     }
 
     public static bool IsOutlookRunning()
@@ -293,6 +314,7 @@ public static class OutlookLauncherSetup
         try
         {
             File.Copy(source, dest, overwrite: true);
+            MotwUnblocker.UnblockFile(dest);
             return true;
         }
         catch (IOException) when (File.Exists(dest))
@@ -315,6 +337,7 @@ public static class OutlookLauncherSetup
 
                 File.Move(dest, bak);
                 File.Copy(source, dest, overwrite: true);
+                MotwUnblocker.UnblockFile(dest);
                 return true;
             }
             catch (Exception ex)
@@ -339,42 +362,49 @@ public static class OutlookLauncherSetup
         var codeBase = new Uri(dllPath).AbsoluteUri;
         var asmName = $"Orbit.OutlookLauncher, Version={AssemblyVersion}, Culture=neutral, PublicKeyToken=null";
 
-        TryDeleteRegistryKey(@"Software\Classes\CLSID\" + Clsid);
-
-        using (var cls = Registry.CurrentUser.CreateSubKey(@"Software\Classes\CLSID\" + Clsid))
+        // Register CLSID in both registry views — covers 64-bit M365 Classic and any 32-bit Outlook.
+        foreach (var view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
         {
-            cls.SetValue(string.Empty, "Orbit Outlook Launcher");
-            cls.CreateSubKey("Programmable");
-        }
+            using var hive = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, view);
+            TryDeleteSubKeyTree(hive, @"Software\Classes\CLSID\" + Clsid);
+            TryDeleteSubKeyTree(hive, @"Software\Classes\" + ProgId);
 
-        SetNetComInproc(@"Software\Classes\CLSID\" + Clsid + @"\InprocServer32", asmName, codeBase);
-        SetNetComInproc(
-            @"Software\Classes\CLSID\" + Clsid + @"\InprocServer32\" + AssemblyVersion,
-            asmName,
-            codeBase);
+            using (var cls = hive.CreateSubKey(@"Software\Classes\CLSID\" + Clsid))
+            {
+                cls.SetValue(string.Empty, "Orbit Outlook Launcher");
+                cls.CreateSubKey("Programmable");
+            }
 
-        using (var cat = Registry.CurrentUser.CreateSubKey(
-                   @"Software\Classes\CLSID\" + Clsid + @"\Implemented Categories\{B65AD801-ABAF-11D0-BB8B-00A0C90F2744}"))
-        {
-            _ = cat;
-        }
+            SetNetComInproc(hive, @"Software\Classes\CLSID\" + Clsid + @"\InprocServer32", asmName, codeBase);
+            SetNetComInproc(
+                hive,
+                @"Software\Classes\CLSID\" + Clsid + @"\InprocServer32\" + AssemblyVersion,
+                asmName,
+                codeBase);
 
-        using (var progIdKey = Registry.CurrentUser.CreateSubKey(@"Software\Classes\CLSID\" + Clsid + @"\ProgId"))
-        {
-            progIdKey.SetValue(string.Empty, ProgId);
-        }
+            using (var cat = hive.CreateSubKey(
+                       @"Software\Classes\CLSID\" + Clsid + @"\Implemented Categories\{B65AD801-ABAF-11D0-BB8B-00A0C90F2744}"))
+            {
+                _ = cat;
+            }
 
-        using (var prog = Registry.CurrentUser.CreateSubKey(@"Software\Classes\" + ProgId))
-        {
-            prog.SetValue(string.Empty, ProgId);
-            using var clsidKey = prog.CreateSubKey("CLSID");
-            clsidKey.SetValue(string.Empty, Clsid);
+            using (var progIdKey = hive.CreateSubKey(@"Software\Classes\CLSID\" + Clsid + @"\ProgId"))
+            {
+                progIdKey.SetValue(string.Empty, ProgId);
+            }
+
+            using (var prog = hive.CreateSubKey(@"Software\Classes\" + ProgId))
+            {
+                prog.SetValue(string.Empty, ProgId);
+                using var clsidKey = prog.CreateSubKey("CLSID");
+                clsidKey.SetValue(string.Empty, Clsid);
+            }
         }
     }
 
-    private static void SetNetComInproc(string keyPath, string asmName, string codeBase)
+    private static void SetNetComInproc(RegistryKey hive, string keyPath, string asmName, string codeBase)
     {
-        using var key = Registry.CurrentUser.CreateSubKey(keyPath);
+        using var key = hive.CreateSubKey(keyPath);
         key.SetValue(string.Empty, "mscoree.dll");
         key.SetValue("Assembly", asmName);
         key.SetValue("Class", "Orbit.OutlookLauncher.Connect");
@@ -385,27 +415,51 @@ public static class OutlookLauncherSetup
 
     private static void RegisterAddIn()
     {
-        using var key = Registry.CurrentUser.CreateSubKey(
-            @"Software\Microsoft\Office\Outlook\Addins\" + ProgId);
-        key.SetValue("FriendlyName", "Orbit");
-        key.SetValue("Description", "Send selected mail to the Orbit app (launch only)");
-        key.SetValue("LoadBehavior", 3, RegistryValueKind.DWord);
+        // Both the version-agnostic and 16.0 (M365/2016+) add-in keys — Outlook 365 reads both.
+        WriteAddInLoadBehavior(@"Software\Microsoft\Office\Outlook\Addins\" + ProgId);
+        WriteAddInLoadBehavior(@"Software\Microsoft\Office\16.0\Outlook\Addins\" + ProgId);
+        WriteAddInLoadBehavior(@"Software\Microsoft\Office\15.0\Outlook\Addins\" + ProgId);
     }
 
-    private static void ForceEnableLoadBehavior()
+    private static void WriteAddInLoadBehavior(string relativePath)
     {
-        using var key = Registry.CurrentUser.CreateSubKey(
-            @"Software\Microsoft\Office\Outlook\Addins\" + ProgId);
-        key.SetValue("LoadBehavior", 3, RegistryValueKind.DWord);
+        foreach (var view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
+        {
+            try
+            {
+                using var hive = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, view);
+                using var key = hive.CreateSubKey(relativePath);
+                key.SetValue("FriendlyName", "Orbit");
+                key.SetValue("Description", "Send selected mail to the Orbit app (launch only)");
+                key.SetValue("LoadBehavior", 3, RegistryValueKind.DWord);
+            }
+            catch
+            {
+                // ignore per-view failures
+            }
+        }
     }
+
+    private static void ForceEnableLoadBehavior() => RegisterAddIn();
 
     private static void EnsureLockbackBypass()
     {
         const string lockback = @"Software\Classes\Interface\{000C0601-0000-0000-C000-000000000046}";
-        using var key = Registry.CurrentUser.CreateSubKey(lockback);
-        if (key.GetValue(string.Empty) is null)
+        foreach (var view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
         {
-            key.SetValue(string.Empty, "Office .NET Framework Lockback Bypass Key");
+            try
+            {
+                using var hive = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, view);
+                using var key = hive.CreateSubKey(lockback);
+                if (key.GetValue(string.Empty) is null)
+                {
+                    key.SetValue(string.Empty, "Office .NET Framework Lockback Bypass Key");
+                }
+            }
+            catch
+            {
+                // ignore
+            }
         }
     }
 
@@ -418,54 +472,74 @@ public static class OutlookLauncherSetup
         foreach (var version in new[] { "16.0", "15.0", "14.0" })
         {
             var root = $@"Software\Microsoft\Office\{version}\Outlook\Resiliency";
-            TryDeleteRegistryKey(root + @"\CrashingAddinList");
-            TryDeleteRegistryKey(root + @"\DisabledItems");
-            TryDeleteRegistryKey(root + @"\StartupItems");
+            TryDeleteRegistryKeyAllViews(root + @"\CrashingAddinList");
+            TryDeleteRegistryKeyAllViews(root + @"\DisabledItems");
+            TryDeleteRegistryKeyAllViews(root + @"\StartupItems");
 
-            // Forget prior slow-load measurements for our ProgId.
-            try
+            foreach (var view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
             {
-                using var times = Registry.CurrentUser.OpenSubKey(
-                    $@"Software\Microsoft\Office\{version}\Outlook\AddInLoadTimes",
-                    writable: true);
-                times?.DeleteValue(ProgId, throwOnMissingValue: false);
-            }
-            catch
-            {
-                // ignore
-            }
+                try
+                {
+                    using var hive = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, view);
+                    using var times = hive.OpenSubKey(
+                        $@"Software\Microsoft\Office\{version}\Outlook\AddInLoadTimes",
+                        writable: true);
+                    times?.DeleteValue(ProgId, throwOnMissingValue: false);
+                }
+                catch
+                {
+                    // ignore
+                }
 
-            try
-            {
-                using var donot = Registry.CurrentUser.CreateSubKey(root + @"\DoNotDisableAddinList");
-                donot.SetValue(ProgId, 1, RegistryValueKind.DWord);
-            }
-            catch
-            {
-                // ignore
-            }
+                try
+                {
+                    using var hive = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, view);
+                    using var donot = hive.CreateSubKey(root + @"\DoNotDisableAddinList");
+                    // 1 = boot-load disable reason — keep enabled (MS resiliency docs).
+                    donot.SetValue(ProgId, 1, RegistryValueKind.DWord);
+                }
+                catch
+                {
+                    // ignore
+                }
 
-            try
-            {
-                using var allow = Registry.CurrentUser.CreateSubKey(root + @"\AddinList");
-                allow.SetValue(ProgId, 1, RegistryValueKind.DWord);
-            }
-            catch
-            {
-                // ignore
+                try
+                {
+                    using var hive = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, view);
+                    using var allow = hive.CreateSubKey(root + @"\AddinList");
+                    allow.SetValue(ProgId, 1, RegistryValueKind.DWord);
+                }
+                catch
+                {
+                    // ignore
+                }
+
+                // Policy-style always-enable (when policies hive is writable for the user).
+                try
+                {
+                    using var hive = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, view);
+                    using var policy = hive.CreateSubKey(
+                        $@"Software\Policies\Microsoft\Office\{version}\Outlook\Resiliency\AddinList");
+                    policy.SetValue(ProgId, 1, RegistryValueKind.DWord);
+                }
+                catch
+                {
+                    // ignore
+                }
             }
         }
     }
 
-    private static void PinDoNotDisable()
+    private static void PinDoNotDisable() => ClearOutlookQuarantine();
+
+    private static void TryDeleteRegistryKeyAllViews(string relativePath)
     {
-        foreach (var version in new[] { "16.0", "15.0", "14.0" })
+        foreach (var view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
         {
             try
             {
-                using var donot = Registry.CurrentUser.CreateSubKey(
-                    $@"Software\Microsoft\Office\{version}\Outlook\Resiliency\DoNotDisableAddinList");
-                donot.SetValue(ProgId, 1, RegistryValueKind.DWord);
+                using var hive = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, view);
+                TryDeleteSubKeyTree(hive, relativePath);
             }
             catch
             {
@@ -474,11 +548,11 @@ public static class OutlookLauncherSetup
         }
     }
 
-    private static void TryDeleteRegistryKey(string relativePath)
+    private static void TryDeleteSubKeyTree(RegistryKey hive, string relativePath)
     {
         try
         {
-            Registry.CurrentUser.DeleteSubKeyTree(relativePath, throwOnMissingSubKey: false);
+            hive.DeleteSubKeyTree(relativePath, throwOnMissingSubKey: false);
         }
         catch
         {
