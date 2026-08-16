@@ -20,10 +20,13 @@ public static class AttentionReasonClassifier
         string? sourceKind,
         string? updatedAt,
         DateTimeOffset? now = null,
-        int? ageHoursOverride = null)
+        int? ageHoursOverride = null,
+        string? waitingFollowUpAt = null,
+        string? waitingSatisfiedAt = null)
     {
         var normalized = NormalizeStatus(status);
-        var ageHours = ageHoursOverride ?? TryAgeHours(updatedAt, now ?? DateTimeOffset.UtcNow);
+        var clock = now ?? DateTimeOffset.UtcNow;
+        var ageHours = ageHoursOverride ?? TryAgeHours(updatedAt, clock);
 
         if (normalized == TaskStatuses.Blocked)
         {
@@ -32,6 +35,16 @@ public static class AttentionReasonClassifier
 
         if (normalized == TaskStatuses.Waiting)
         {
+            if (!string.IsNullOrWhiteSpace(waitingSatisfiedAt))
+            {
+                return "Waiting";
+            }
+
+            if (WaitingOnStaleRanker.IsFollowUpOverdue(waitingFollowUpAt, clock))
+            {
+                return "Follow-up due";
+            }
+
             if (ageHours is >= WaitingSeveralDaysHours)
             {
                 return "Waiting several days";

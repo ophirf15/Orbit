@@ -559,91 +559,113 @@ public static class WorkbenchEndpoints
             });
         });
 
-        app.MapGet("/v1/projects/{id}/context", (string id, ProjectContextReadStore contexts, HttpContext http) =>
+        app.MapGet(HostEndpoints.ProjectContext, (
+            string id,
+            ProjectContextReadStore contexts,
+            ProjectLivingBriefMaintainer livingBriefs,
+            EventHub hub,
+            HttpContext http) =>
         {
             var requestId = ApiKeyMiddleware.GetRequestId(http);
             var context = contexts.GetContext(id);
             if (context is null)
             {
                 return Results.Json(
-                    ApiErrors.Create(ApiErrorCodes.BadRequest, "Project was not found.", requestId),
+                    ApiErrors.Create(ApiErrorCodes.NotFound, "Project was not found.", requestId),
                     statusCode: StatusCodes.Status404NotFound);
             }
 
-            return Results.Json(new
+            // Baseline living brief on project open when summary/dossier are blank.
+            if (ProjectLivingBriefSynthesizer.NeedsBaseline(context.Summary, context.DossierEmpty))
             {
-                id = context.Id,
-                name = context.Name,
-                summary = context.Summary,
-                code = context.Code,
-                dossier = context.Dossier is null ? null : MapDossier(context.Dossier),
-                dossierEmpty = context.DossierEmpty,
-                aliases = context.Aliases.Select(a => new { id = a.Id, alias = a.Alias }),
-                tasks = context.Tasks.Select(t => new
+                try
                 {
-                    taskId = t.TaskId,
-                    title = t.Title,
-                    status = t.Status,
-                    nextAction = t.NextAction,
-                    body = t.Body,
-                    dueAt = t.DueAt,
-                    priority = t.Priority,
-                    urgency = t.Urgency,
-                }),
-                completedTasks = context.CompletedTasks.Select(t => new
+                    var applied = livingBriefs.EnsureBaseline(id);
+                    if (applied.Applied)
+                    {
+                        hub.Publish(new OrbitEvent
+                        {
+                            Type = "project.updated",
+                            Payload = new
+                            {
+                                projectId = id,
+                                summary = applied.Summary,
+                                livingBrief = true,
+                                summaryUpdated = applied.SummaryUpdated,
+                                dossierUpdated = applied.DossierUpdated,
+                            },
+                        });
+                        context = contexts.GetContext(id) ?? context;
+                    }
+                }
+                catch (ArgumentException)
                 {
-                    taskId = t.TaskId,
-                    title = t.Title,
-                    status = t.Status,
-                    nextAction = t.NextAction,
-                    body = t.Body,
-                    dueAt = t.DueAt,
-                    priority = t.Priority,
-                    urgency = t.Urgency,
-                }),
-                notes = context.Notes.Select(n => new
+                    // Best-effort — still return context.
+                }
+            }
+
+            return Results.Json(MapProjectContext(context, requestId));
+        });
+
+        app.MapPost(HostEndpoints.ProjectBriefRefresh, (
+            string id,
+            ProjectLivingBriefMaintainer livingBriefs,
+            ProjectContextReadStore contexts,
+            EventHub hub,
+            HttpContext http) =>
+        {
+            var requestId = ApiKeyMiddleware.GetRequestId(http);
+            try
+            {
+                var result = livingBriefs.Refresh(id);
+                if (result.Applied)
                 {
-                    id = n.Id,
-                    originalText = n.OriginalText,
-                    createdAt = n.CreatedAt,
-                }),
-                blockers = context.Blockers.Select(b => new
+                    hub.Publish(new OrbitEvent
+                    {
+                        Type = "project.updated",
+                        Payload = new
+                        {
+                            projectId = id,
+                            summary = result.Summary,
+                            livingBrief = true,
+                            summaryUpdated = result.SummaryUpdated,
+                            dossierUpdated = result.DossierUpdated,
+                        },
+                    });
+                }
+
+                var context = contexts.GetContext(id);
+                if (context is null)
                 {
-                    id = b.Id,
-                    summary = b.Summary,
-                    status = b.Status,
-                    taskId = b.TaskId,
-                    createdAt = b.CreatedAt,
-                }),
-                contacts = context.Contacts.Select(c => new
+                    return Results.Json(
+                        ApiErrors.Create(ApiErrorCodes.NotFound, "Project was not found.", requestId),
+                        statusCode: StatusCodes.Status404NotFound);
+                }
+
+                return Results.Json(new
                 {
-                    personId = c.PersonId,
-                    displayName = c.DisplayName,
-                    title = c.Title,
-                    organizationName = c.OrganizationName,
-                }),
-                meetings = context.Meetings.Select(m => new
-                {
-                    id = m.Id,
-                    title = m.Title,
-                    startsAt = m.StartsAt,
-                }),
-                suggestions = context.Suggestions.Select(s => new
-                {
-                    id = s.Id,
-                    summary = s.Summary,
-                    status = s.Status,
-                    noteId = s.NoteId,
-                }),
-                files = context.Files.Select(f => new
-                {
-                    id = f.Id,
-                    displayName = f.DisplayName,
-                    path = f.Path,
-                    extension = f.Extension,
-                }),
-                requestId,
-            });
+                    projectId = id,
+                    applied = result.Applied,
+                    summaryUpdated = result.SummaryUpdated,
+                    dossierUpdated = result.DossierUpdated,
+                    skipReason = result.SkipReason,
+                    summary = result.Summary ?? context.Summary,
+                    dossier = (result.Dossier ?? context.Dossier) is null
+                        ? null
+                        : MapDossier(result.Dossier ?? context.Dossier!),
+                    dossierEmpty = result.DossierEmpty,
+                    context = MapProjectContext(context, requestId),
+                    requestId,
+                });
+            }
+            catch (ArgumentException ex)
+            {
+                var code = ex.ParamName == "projectId" ? ApiErrorCodes.NotFound : ApiErrorCodes.BadRequest;
+                var status = code == ApiErrorCodes.NotFound
+                    ? StatusCodes.Status404NotFound
+                    : StatusCodes.Status400BadRequest;
+                return Results.Json(ApiErrors.Create(code, ex.Message, requestId), statusCode: status);
+            }
         });
 
         app.MapGet(HostEndpoints.TaskById, (string id, ProjectContextReadStore contexts, HttpContext http) =>
@@ -671,6 +693,15 @@ public static class WorkbenchEndpoints
                 sourceKind = task.SourceKind,
                 sourceConfidence = task.SourceConfidence,
                 sourceMatchReason = task.SourceMatchReason,
+                waitingOnLabel = task.WaitingOnLabel,
+                waitingOnPersonId = task.WaitingOnPersonId,
+                waitingOnOrganizationId = task.WaitingOnOrganizationId,
+                waitingFollowUpAt = task.WaitingFollowUpAt,
+                waitingCadence = task.WaitingCadence,
+                waitingSatisfiedAt = task.WaitingSatisfiedAt,
+                waitingEvidenceRef = task.WaitingEvidenceRef,
+                createdAt = task.CreatedAt,
+                updatedAt = task.UpdatedAt,
                 requestId,
             });
         });
@@ -940,6 +971,83 @@ public static class WorkbenchEndpoints
         createdAt = note.CreatedAt,
         suggestionId = note.SuggestionId,
         suggestionSummary = note.SuggestionSummary,
+    };
+
+    private static object MapProjectContext(ProjectContextRecord context, string requestId) => new
+    {
+        id = context.Id,
+        name = context.Name,
+        summary = context.Summary,
+        code = context.Code,
+        dossier = context.Dossier is null ? null : MapDossier(context.Dossier),
+        dossierEmpty = context.DossierEmpty,
+        aliases = context.Aliases.Select(a => new { id = a.Id, alias = a.Alias }),
+        tasks = context.Tasks.Select(t => new
+        {
+            taskId = t.TaskId,
+            title = t.Title,
+            status = t.Status,
+            nextAction = t.NextAction,
+            body = t.Body,
+            dueAt = t.DueAt,
+            priority = t.Priority,
+            urgency = t.Urgency,
+            waitingOnLabel = t.WaitingOnLabel,
+        }),
+        completedTasks = context.CompletedTasks.Select(t => new
+        {
+            taskId = t.TaskId,
+            title = t.Title,
+            status = t.Status,
+            nextAction = t.NextAction,
+            body = t.Body,
+            dueAt = t.DueAt,
+            priority = t.Priority,
+            urgency = t.Urgency,
+            waitingOnLabel = t.WaitingOnLabel,
+        }),
+        notes = context.Notes.Select(n => new
+        {
+            id = n.Id,
+            originalText = n.OriginalText,
+            createdAt = n.CreatedAt,
+        }),
+        blockers = context.Blockers.Select(b => new
+        {
+            id = b.Id,
+            summary = b.Summary,
+            status = b.Status,
+            taskId = b.TaskId,
+            createdAt = b.CreatedAt,
+        }),
+        contacts = context.Contacts.Select(c => new
+        {
+            personId = c.PersonId,
+            displayName = c.DisplayName,
+            title = c.Title,
+            organizationName = c.OrganizationName,
+        }),
+        meetings = context.Meetings.Select(m => new
+        {
+            id = m.Id,
+            title = m.Title,
+            startsAt = m.StartsAt,
+        }),
+        suggestions = context.Suggestions.Select(s => new
+        {
+            id = s.Id,
+            summary = s.Summary,
+            status = s.Status,
+            noteId = s.NoteId,
+        }),
+        files = context.Files.Select(f => new
+        {
+            id = f.Id,
+            displayName = f.DisplayName,
+            path = f.Path,
+            extension = f.Extension,
+        }),
+        requestId,
     };
 
     internal static object MapDossier(ProjectDossier dossier) => new

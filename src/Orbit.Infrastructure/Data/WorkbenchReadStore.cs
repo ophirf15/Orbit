@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Orbit.Core.Data;
+using Orbit.Infrastructure.Suggestions;
 
 namespace Orbit.Infrastructure.Data;
 
@@ -421,10 +422,15 @@ public sealed class WorkbenchReadStore
               AND task_id IS NOT NULL
               AND status = $pending
               AND archived_at IS NULL
+              AND suggestion_type <> $reviewLimbo
+              AND confidence IS NOT NULL
+              AND confidence >= $minConf
             GROUP BY task_id;
             """;
         cmd.Parameters.AddWithValue("$project", projectId);
         cmd.Parameters.AddWithValue("$pending", SuggestionStatuses.Pending);
+        cmd.Parameters.AddWithValue("$reviewLimbo", SuggestionTypes.ReviewLimbo);
+        cmd.Parameters.AddWithValue("$minConf", SuggestionHygiene.ActionableMinConfidence);
 
         var map = new Dictionary<string, int>(StringComparer.Ordinal);
         using var reader = cmd.ExecuteReader();
@@ -607,8 +613,13 @@ public sealed class WorkbenchReadStore
             WHERE archived_at IS NULL
               AND status = 'pending'
               AND project_id IS NOT NULL
+              AND suggestion_type <> $reviewLimbo
+              AND confidence IS NOT NULL
+              AND confidence >= $minConf
             GROUP BY project_id;
             """;
+        cmd.Parameters.AddWithValue("$reviewLimbo", SuggestionTypes.ReviewLimbo);
+        cmd.Parameters.AddWithValue("$minConf", SuggestionHygiene.ActionableMinConfidence);
 
         var map = new Dictionary<string, int>(StringComparer.Ordinal);
         using var reader = cmd.ExecuteReader();

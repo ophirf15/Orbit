@@ -367,6 +367,41 @@ public sealed class CoreHostClient : IDisposable
         return response.IsSuccessStatusCode;
     }
 
+    /// <summary>
+    /// Explicit living-brief refresh: fills empty dossier slots and merges/appends an Auto brief section.
+    /// Returns updated context when successful.
+    /// </summary>
+    public async Task<ProjectContextVm?> RefreshProjectBriefAsync(string projectId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(projectId))
+        {
+            return null;
+        }
+
+        using var response = await _http.PostAsync(
+            $"v1/projects/{Uri.EscapeDataString(projectId)}/brief/refresh",
+            content: null,
+            ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+        if (doc.RootElement.TryGetProperty("context", out var contextEl)
+            && contextEl.ValueKind == JsonValueKind.Object)
+        {
+            var dto = JsonSerializer.Deserialize<ProjectContextDto>(contextEl.GetRawText(), JsonOptions);
+            if (dto is not null)
+            {
+                return MapProjectContext(dto, projectId);
+            }
+        }
+
+        return await GetProjectContextAsync(projectId, ct);
+    }
+
     public async Task<IReadOnlyList<ProjectAliasVm>> ListProjectAliasesAsync(
         string projectId,
         CancellationToken ct = default)
@@ -472,6 +507,9 @@ public sealed class CoreHostClient : IDisposable
         string? nextAction = null,
         string? body = null,
         string? status = null,
+        string? sourceKind = null,
+        double? sourceConfidence = null,
+        string? sourceMatchReason = null,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(projectId))
@@ -488,6 +526,9 @@ public sealed class CoreHostClient : IDisposable
                 nextAction,
                 body,
                 status,
+                sourceKind,
+                sourceConfidence,
+                sourceMatchReason,
                 actor = "user",
             },
             ct);
@@ -514,6 +555,23 @@ public sealed class CoreHostClient : IDisposable
         return (id!, taskTitle ?? title, pid ?? projectId);
     }
 
+    public async Task<CapturePreviewDto?> GetCapturePreviewAsync(
+        string? text,
+        string? defaultProjectId = null,
+        CancellationToken ct = default)
+    {
+        using var response = await _http.PostAsJsonAsync(
+            "v1/capture/preview",
+            new { text, defaultProjectId },
+            ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        return await response.Content.ReadFromJsonAsync<CapturePreviewDto>(cancellationToken: ct);
+    }
+
     public async Task<bool> SetBlockerAsync(
         string summary,
         string? projectId = null,
@@ -532,6 +590,62 @@ public sealed class CoreHostClient : IDisposable
                 summary,
                 projectId,
                 taskId,
+                actor = "user",
+            },
+            ct);
+        return response.IsSuccessStatusCode;
+    }
+
+    public async Task<bool> SetWaitingOnAsync(
+        string taskId,
+        string? waitingOnLabel = null,
+        string? waitingOnPersonId = null,
+        string? waitingOnOrganizationId = null,
+        string? followUpAt = null,
+        string? cadence = null,
+        bool setStatusWaiting = true,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(taskId))
+        {
+            return false;
+        }
+
+        using var response = await _http.PostAsJsonAsync(
+            "v1/agent/tools/orbit_set_waiting_on",
+            new
+            {
+                taskId,
+                waitingOnLabel,
+                waitingOnPersonId,
+                waitingOnOrganizationId,
+                followUpAt,
+                cadence,
+                setStatusWaiting,
+                actor = "user",
+            },
+            ct);
+        return response.IsSuccessStatusCode;
+    }
+
+    public async Task<bool> ClearWaitingOnAsync(
+        string taskId,
+        string evidenceRef,
+        bool resumeActive = true,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(taskId) || string.IsNullOrWhiteSpace(evidenceRef))
+        {
+            return false;
+        }
+
+        using var response = await _http.PostAsJsonAsync(
+            "v1/agent/tools/orbit_clear_waiting_on",
+            new
+            {
+                taskId,
+                evidenceRef,
+                resumeActive,
                 actor = "user",
             },
             ct);
@@ -1128,6 +1242,23 @@ public sealed class CoreHostClient : IDisposable
         return response.IsSuccessStatusCode;
     }
 
+    public async Task<bool> SatisfyTaskDependencyAsync(
+        string dependencyId,
+        string evidenceRef,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(dependencyId) || string.IsNullOrWhiteSpace(evidenceRef))
+        {
+            return false;
+        }
+
+        using var response = await _http.PostAsJsonAsync(
+            "v1/agent/tools/orbit_satisfy_task_dependency",
+            new { dependencyId, evidenceRef, actor = "user" },
+            ct);
+        return response.IsSuccessStatusCode;
+    }
+
     /// <summary>Asks the host to re-run link detection for a task, returning any fresh proposals.</summary>
     public async Task<int> SuggestTaskLinksAsync(string taskId, CancellationToken ct = default)
     {
@@ -1150,9 +1281,46 @@ public sealed class CoreHostClient : IDisposable
         return dto?.Suggestions?.Length ?? 0;
     }
 
-    public async Task<IReadOnlyList<PendingSuggestionVm>> GetPendingSuggestionsAsync(CancellationToken ct = default)
+    public async Task<IReadOnlyList<PendingSuggestionVm>> GetPendingSuggestionsAsync(
+        CancellationToken ct = default) =>
+        await GetSuggestionsAsync(status: "pending", ct: ct);
+
+    public async Task<IReadOnlyList<PendingSuggestionVm>> GetSuggestionsAsync(
+        string? status = "pending",
+        string? projectId = null,
+        double? minConfidence = null,
+        double? maxConfidence = null,
+        string? queue = null,
+        CancellationToken ct = default)
     {
-        using var response = await _http.GetAsync("v1/suggestions?status=pending", ct);
+        var query = new List<string>();
+        if (!string.IsNullOrWhiteSpace(status) && string.IsNullOrWhiteSpace(queue))
+        {
+            query.Add($"status={Uri.EscapeDataString(status)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(projectId))
+        {
+            query.Add($"projectId={Uri.EscapeDataString(projectId)}");
+        }
+
+        if (minConfidence is not null)
+        {
+            query.Add($"minConfidence={minConfidence.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+        }
+
+        if (maxConfidence is not null)
+        {
+            query.Add($"maxConfidence={maxConfidence.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(queue))
+        {
+            query.Add($"queue={Uri.EscapeDataString(queue)}");
+        }
+
+        var path = query.Count == 0 ? "v1/suggestions" : $"v1/suggestions?{string.Join("&", query)}";
+        using var response = await _http.GetAsync(path, ct);
         if (!response.IsSuccessStatusCode)
         {
             return [];
@@ -1171,8 +1339,70 @@ public sealed class CoreHostClient : IDisposable
                 TaskId = s.TaskId,
                 Confidence = s.Confidence,
                 PayloadJson = s.PayloadJson,
+                GroupKey = s.GroupKey,
             })
             .ToList();
+    }
+
+    public async Task<SuggestionBatchDecideResult> BatchDecideSuggestionsAsync(
+        IReadOnlyList<string> ids,
+        string decision,
+        string? applyProjectId = null,
+        CancellationToken ct = default)
+    {
+        if (ids.Count == 0 || string.IsNullOrWhiteSpace(decision))
+        {
+            return new SuggestionBatchDecideResult();
+        }
+
+        using var response = await _http.PostAsJsonAsync(
+            "v1/suggestions/batch-decide",
+            new { ids, decision, actor = "user", applyProjectId },
+            ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            return new SuggestionBatchDecideResult { Failed = ids.Count };
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        var dto = await JsonSerializer.DeserializeAsync<SuggestionBatchDecideDto>(stream, JsonOptions, ct);
+        return new SuggestionBatchDecideResult
+        {
+            Accepted = dto?.Accepted ?? 0,
+            Rejected = dto?.Rejected ?? 0,
+            Expired = dto?.Expired ?? 0,
+            Failed = dto?.Failed ?? 0,
+            Results = (dto?.Results ?? [])
+                .Select(r => new SuggestionBatchDecideItemVm
+                {
+                    Id = r.Id ?? string.Empty,
+                    Ok = r.Ok,
+                    Error = r.Error,
+                })
+                .ToList(),
+        };
+    }
+
+    private sealed class SuggestionBatchDecideDto
+    {
+        public SuggestionBatchItemDto[]? Results { get; set; }
+
+        public int Accepted { get; set; }
+
+        public int Rejected { get; set; }
+
+        public int Expired { get; set; }
+
+        public int Failed { get; set; }
+    }
+
+    private sealed class SuggestionBatchItemDto
+    {
+        public string? Id { get; set; }
+
+        public bool Ok { get; set; }
+
+        public string? Error { get; set; }
     }
 
     private static TaskLinkVm MapEdge(TaskDependencyEdgeDto dto) => new()
@@ -1186,6 +1416,10 @@ public sealed class CoreHostClient : IDisposable
         Expects = dto.Expects,
         Reason = dto.Reason,
         CreatedAt = dto.CreatedAt,
+        FollowUpAt = dto.FollowUpAt,
+        Cadence = dto.Cadence,
+        EvidenceRef = dto.EvidenceRef,
+        SatisfiedAt = dto.SatisfiedAt,
         Satisfied = dto.Satisfied,
     };
 
@@ -1216,6 +1450,14 @@ public sealed class CoreHostClient : IDisposable
 
         public string? CreatedAt { get; set; }
 
+        public string? FollowUpAt { get; set; }
+
+        public string? Cadence { get; set; }
+
+        public string? EvidenceRef { get; set; }
+
+        public string? SatisfiedAt { get; set; }
+
         public bool Satisfied { get; set; }
     }
 
@@ -1242,6 +1484,8 @@ public sealed class CoreHostClient : IDisposable
         public string? TaskId { get; set; }
 
         public string? PayloadJson { get; set; }
+
+        public string? GroupKey { get; set; }
 
         public double? Confidence { get; set; }
     }
@@ -1712,6 +1956,15 @@ public sealed class CoreHostClient : IDisposable
             SourceKind = dto.SourceKind,
             SourceConfidence = dto.SourceConfidence,
             SourceMatchReason = dto.SourceMatchReason,
+            WaitingOnLabel = dto.WaitingOnLabel,
+            WaitingOnPersonId = dto.WaitingOnPersonId,
+            WaitingOnOrganizationId = dto.WaitingOnOrganizationId,
+            WaitingFollowUpAt = dto.WaitingFollowUpAt,
+            WaitingCadence = dto.WaitingCadence,
+            WaitingSatisfiedAt = dto.WaitingSatisfiedAt,
+            WaitingEvidenceRef = dto.WaitingEvidenceRef,
+            CreatedAt = dto.CreatedAt,
+            UpdatedAt = dto.UpdatedAt,
         };
     }
 
@@ -1814,7 +2067,11 @@ public sealed class CoreHostClient : IDisposable
             return null;
         }
 
-        return new ProjectContextVm
+        return MapProjectContext(dto, projectId);
+    }
+
+    private static ProjectContextVm MapProjectContext(ProjectContextDto dto, string projectId) =>
+        new()
         {
             Id = dto.Id ?? projectId,
             Name = dto.Name ?? string.Empty,
@@ -1850,6 +2107,7 @@ public sealed class CoreHostClient : IDisposable
                 DueAt = t.DueAt,
                 Priority = t.Priority,
                 Urgency = t.Urgency,
+                WaitingOnLabel = t.WaitingOnLabel,
             }).ToList(),
             CompletedTasks = (dto.CompletedTasks ?? []).Select(t => new CellLineVm
             {
@@ -1861,6 +2119,7 @@ public sealed class CoreHostClient : IDisposable
                 DueAt = t.DueAt,
                 Priority = t.Priority,
                 Urgency = t.Urgency,
+                WaitingOnLabel = t.WaitingOnLabel,
             }).ToList(),
             Notes = (dto.Notes ?? [])
                 .Where(n => !string.IsNullOrWhiteSpace(n.Id) && !string.IsNullOrWhiteSpace(n.OriginalText))
@@ -1917,7 +2176,6 @@ public sealed class CoreHostClient : IDisposable
                 })
                 .ToList(),
         };
-    }
 
     public async Task<CaptureResponseVm?> AssignLimboNoteAsync(
         string noteId,
@@ -2764,6 +3022,12 @@ public sealed class CoreHostClient : IDisposable
             Status = w.Status ?? string.Empty,
             UpdatedAt = w.UpdatedAt ?? string.Empty,
             AgeHours = w.AgeHours,
+            WaitingOnLabel = w.WaitingOnLabel,
+            FollowUpAt = w.FollowUpAt,
+            Cadence = w.Cadence,
+            IsStale = w.IsStale,
+            FollowUpOverdue = w.FollowUpOverdue,
+            StaleScore = w.StaleScore,
         }).ToList(),
         Alerts = (dto.Alerts ?? []).Select(a => new PulseBriefingAlertVm
         {
@@ -2807,6 +3071,10 @@ public sealed class CoreHostClient : IDisposable
         SourceKind = dto.SourceKind,
         SourceConfidence = dto.SourceConfidence,
         SourceMatchReason = dto.SourceMatchReason,
+        WaitingOnLabel = dto.WaitingOnLabel,
+        WaitingFollowUpAt = dto.WaitingFollowUpAt,
+        WaitingCadence = dto.WaitingCadence,
+        WaitingSatisfiedAt = dto.WaitingSatisfiedAt,
     };
 
     private static PulseUnmatchedMailVm MapUnmatchedMail(PulseUnmatchedMailDto dto) => new()
@@ -3117,6 +3385,8 @@ public sealed class CoreHostClient : IDisposable
         public int? Priority { get; set; }
 
         public int? Urgency { get; set; }
+
+        public string? WaitingOnLabel { get; set; }
     }
 
     private sealed class TaskByIdDto
@@ -3144,6 +3414,24 @@ public sealed class CoreHostClient : IDisposable
         public double? SourceConfidence { get; set; }
 
         public string? SourceMatchReason { get; set; }
+
+        public string? WaitingOnLabel { get; set; }
+
+        public string? WaitingOnPersonId { get; set; }
+
+        public string? WaitingOnOrganizationId { get; set; }
+
+        public string? WaitingFollowUpAt { get; set; }
+
+        public string? WaitingCadence { get; set; }
+
+        public string? WaitingSatisfiedAt { get; set; }
+
+        public string? WaitingEvidenceRef { get; set; }
+
+        public string? CreatedAt { get; set; }
+
+        public string? UpdatedAt { get; set; }
     }
 
     private sealed class TaskHistoryDto
@@ -3851,6 +4139,18 @@ public sealed class CoreHostClient : IDisposable
         public string? UpdatedAt { get; set; }
 
         public int AgeHours { get; set; }
+
+        public string? WaitingOnLabel { get; set; }
+
+        public string? FollowUpAt { get; set; }
+
+        public string? Cadence { get; set; }
+
+        public bool IsStale { get; set; }
+
+        public bool FollowUpOverdue { get; set; }
+
+        public int StaleScore { get; set; }
     }
 
     private sealed class PulseBriefingAlertDto
@@ -3900,6 +4200,14 @@ public sealed class CoreHostClient : IDisposable
         public double? SourceConfidence { get; set; }
 
         public string? SourceMatchReason { get; set; }
+
+        public string? WaitingOnLabel { get; set; }
+
+        public string? WaitingFollowUpAt { get; set; }
+
+        public string? WaitingCadence { get; set; }
+
+        public string? WaitingSatisfiedAt { get; set; }
     }
 
     private sealed class PulseUnmatchedMailDto
@@ -4271,4 +4579,44 @@ public sealed class SyncStatusInfo
     public string? AutoBackupHint { get; init; }
 
     public string? ConflictMessage { get; init; }
+}
+
+public sealed class CapturePreviewDto
+{
+    public string? OriginalText { get; set; }
+
+    public string? Title { get; set; }
+
+    public string? Brief { get; set; }
+
+    public string? NextAction { get; set; }
+
+    public string? DueAt { get; set; }
+
+    public string? WaitingOn { get; set; }
+
+    public string? People { get; set; }
+
+    public string? Location { get; set; }
+
+    public string? Source { get; set; }
+
+    public CapturePreviewProjectDto? MatchedProject { get; set; }
+
+    public List<CapturePreviewProjectDto>? Candidates { get; set; }
+}
+
+public sealed class CapturePreviewProjectDto
+{
+    public string? ProjectId { get; set; }
+
+    public string? Name { get; set; }
+
+    public double Score { get; set; }
+
+    public string? Reason { get; set; }
+
+    public string? ReasonLabel { get; set; }
+
+    public bool AutoSelected { get; set; }
 }

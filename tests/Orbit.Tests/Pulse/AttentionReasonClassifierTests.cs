@@ -153,6 +153,35 @@ public sealed class AttentionReasonClassifierTests
     }
 
     [Fact]
+    public void Classify_WaitingFollowUpOverdue_ReturnsFollowUpDue()
+    {
+        var label = AttentionReasonClassifier.Classify(
+            TaskStatuses.Waiting,
+            nextAction: "Chase reply",
+            sourceKind: null,
+            updatedAt: Now.AddHours(-6).ToString("o"),
+            now: Now,
+            waitingFollowUpAt: Now.AddDays(-1).ToString("yyyy-MM-dd"));
+
+        Assert.Equal("Follow-up due", label);
+    }
+
+    [Fact]
+    public void Classify_WaitingSatisfiedIgnoresFollowUp()
+    {
+        var label = AttentionReasonClassifier.Classify(
+            TaskStatuses.Waiting,
+            nextAction: "Done",
+            sourceKind: null,
+            updatedAt: Now.AddHours(-6).ToString("o"),
+            now: Now,
+            waitingFollowUpAt: Now.AddDays(-2).ToString("yyyy-MM-dd"),
+            waitingSatisfiedAt: Now.ToString("o"));
+
+        Assert.Equal("Waiting", label);
+    }
+
+    [Fact]
     public void TryAgeHours_ParsesIsoTimestamp()
     {
         var hours = AttentionReasonClassifier.TryAgeHours(

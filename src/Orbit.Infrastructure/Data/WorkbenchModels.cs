@@ -93,6 +93,24 @@ public sealed class CellLineRecord
     public double? SourceConfidence { get; init; }
 
     public string? SourceMatchReason { get; init; }
+
+    public string? WaitingOnLabel { get; init; }
+
+    public string? WaitingOnPersonId { get; init; }
+
+    public string? WaitingOnOrganizationId { get; init; }
+
+    public string? WaitingFollowUpAt { get; init; }
+
+    public string? WaitingCadence { get; init; }
+
+    public string? WaitingSatisfiedAt { get; init; }
+
+    public string? WaitingEvidenceRef { get; init; }
+
+    public string? CreatedAt { get; init; }
+
+    public string? UpdatedAt { get; init; }
 }
 
 public sealed class LimboNoteRecord

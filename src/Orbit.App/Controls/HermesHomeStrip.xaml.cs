@@ -10,6 +10,12 @@ public sealed partial class HermesHomeStrip : UserControl
 
     public event EventHandler<string>? ConcernClicked;
 
+    public event EventHandler? DismissLowConfidenceRequested;
+
+    public event EventHandler? OpenReviewRequested;
+
+    private int _lowConfidenceCount;
+
     public HermesHomeStrip()
     {
         InitializeComponent();
@@ -17,7 +23,12 @@ public sealed partial class HermesHomeStrip : UserControl
         BriefExpander.Collapsed += (_, _) => SetBriefHeader(expanded: false);
     }
 
-    public void SetBusy(bool busy) => RefreshButton.IsEnabled = !busy;
+    public void SetBusy(bool busy)
+    {
+        RefreshButton.IsEnabled = !busy;
+        DismissLowButton.IsEnabled = !busy && _lowConfidenceCount > 0;
+        OpenReviewButton.IsEnabled = !busy && _lowConfidenceCount > 0;
+    }
 
     public void Bind(PulseVm? pulse)
     {
@@ -53,6 +64,26 @@ public sealed partial class HermesHomeStrip : UserControl
         CompactHeaderText.Text = FormatAttentionHeader(concerns.Count);
         ConcernsHeader.Visibility = concerns.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         ConcernsRepeater.ItemsSource = concerns;
+    }
+
+    /// <summary>Show low-confidence pending suggestion count (Workbench is the primary Pulse surface).</summary>
+    public void BindLowConfidence(int count)
+    {
+        _lowConfidenceCount = Math.Max(0, count);
+        if (_lowConfidenceCount == 0)
+        {
+            LowConfidencePanel.Visibility = Visibility.Collapsed;
+            DismissLowButton.IsEnabled = false;
+            OpenReviewButton.IsEnabled = false;
+            return;
+        }
+
+        LowConfidenceText.Text = _lowConfidenceCount == 1
+            ? "1 low-confidence suggestion in review queue"
+            : $"{_lowConfidenceCount} low-confidence suggestions in review queue";
+        LowConfidencePanel.Visibility = Visibility.Visible;
+        DismissLowButton.IsEnabled = true;
+        OpenReviewButton.IsEnabled = true;
     }
 
     private static string FormatAttentionHeader(int count) => count switch
@@ -119,6 +150,12 @@ public sealed partial class HermesHomeStrip : UserControl
 
     private void RefreshButton_Click(object sender, RoutedEventArgs e) =>
         RefreshRequested?.Invoke(this, EventArgs.Empty);
+
+    private void DismissLowButton_Click(object sender, RoutedEventArgs e) =>
+        DismissLowConfidenceRequested?.Invoke(this, EventArgs.Empty);
+
+    private void OpenReviewButton_Click(object sender, RoutedEventArgs e) =>
+        OpenReviewRequested?.Invoke(this, EventArgs.Empty);
 
     private void ConcernChip_Click(object sender, RoutedEventArgs e)
     {

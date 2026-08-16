@@ -69,10 +69,13 @@ public static class AgentToolEndpoints
 
         app.MapPost(HostEndpoints.AgentToolLinkTasks, LinkTasks);
         app.MapPost(HostEndpoints.AgentToolUnlinkTasks, UnlinkTasks);
+        app.MapPost(HostEndpoints.AgentToolSatisfyTaskDependency, SatisfyTaskDependency);
         app.MapGet(HostEndpoints.AgentToolGetTaskDependencies, GetTaskDependencies);
         app.MapPost(HostEndpoints.AgentToolGetTaskDependencies, GetTaskDependenciesPost);
         app.MapPost(HostEndpoints.AgentToolSuggestTaskLinks, SuggestTaskLinks);
         app.MapPost(HostEndpoints.AgentToolRejectSuggestion, RejectSuggestion);
+        app.MapPost(HostEndpoints.AgentToolSetWaitingOn, SetWaitingOn);
+        app.MapPost(HostEndpoints.AgentToolClearWaitingOn, ClearWaitingOn);
 
         app.MapPost(HostEndpoints.AgentToolGetChanges, GetChangesTool);
         app.MapPost(HostEndpoints.AgentToolGetPulseDelta, GetPulseDeltaTool);
@@ -512,7 +515,10 @@ public static class AgentToolEndpoints
                 MapProvenance(body.Provenance),
                 nextAction: body.NextAction,
                 body: body.Body,
-                workstreamId: body.WorkstreamId);
+                workstreamId: body.WorkstreamId,
+                sourceKind: body.SourceKind,
+                sourceConfidence: body.SourceConfidence,
+                sourceMatchReason: body.SourceMatchReason);
             hub.Publish(new OrbitEvent { Type = "task.created", Payload = new { taskId = result.Id, projectId = result.ProjectId } });
             return Results.Json(new { tool = "orbit_create_task", requestId, task = result }, statusCode: StatusCodes.Status201Created);
         }
@@ -1453,6 +1459,8 @@ public static class AgentToolEndpoints
                 body.Expects,
                 body.Confidence,
                 body.EvidenceRef,
+                body.FollowUpAt,
+                body.Cadence,
                 body.Actor ?? "agent",
                 MapProvenance(body.Provenance));
 
@@ -1520,6 +1528,145 @@ public static class AgentToolEndpoints
         }
     }
 
+    private static IResult SatisfyTaskDependency(
+        SatisfyTaskDependencyBody? body,
+        TaskDependencyStore dependencies,
+        EventHub hub,
+        HttpContext http)
+    {
+        var requestId = ApiKeyMiddleware.GetRequestId(http);
+        try
+        {
+            if (body is null || string.IsNullOrWhiteSpace(body.DependencyId))
+            {
+                return Results.Json(
+                    ApiErrors.Create(ApiErrorCodes.BadRequest, "Body field 'dependencyId' is required.", requestId),
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            if (string.IsNullOrWhiteSpace(body.EvidenceRef))
+            {
+                return Results.Json(
+                    ApiErrors.Create(
+                        ApiErrorCodes.BadRequest,
+                        "Body field 'evidenceRef' is required (note, email, or short proof).",
+                        requestId),
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            var result = dependencies.Satisfy(
+                body.DependencyId,
+                body.EvidenceRef,
+                body.Actor ?? "agent",
+                MapProvenance(body.Provenance));
+
+            hub.Publish(new OrbitEvent
+            {
+                Type = "task.dependency.satisfied",
+                Payload = new
+                {
+                    dependencyId = result.Id,
+                    evidenceRef = result.EvidenceRef,
+                    successorTaskId = result.SuccessorTaskId,
+                },
+            });
+
+            return Results.Json(new { tool = "orbit_satisfy_task_dependency", requestId, dependency = result });
+        }
+        catch (ArgumentException ex)
+        {
+            return MutationError(ex, requestId);
+        }
+    }
+
+    private static IResult SetWaitingOn(
+        SetWaitingOnBody? body,
+        OrbitMutationStore mutations,
+        EventHub hub,
+        HttpContext http)
+    {
+        var requestId = ApiKeyMiddleware.GetRequestId(http);
+        try
+        {
+            if (body is null || string.IsNullOrWhiteSpace(body.TaskId ?? body.Id))
+            {
+                return Results.Json(
+                    ApiErrors.Create(ApiErrorCodes.BadRequest, "Body field 'taskId' (or 'id') is required.", requestId),
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            var result = mutations.SetWaitingOn(
+                body.TaskId ?? body.Id!,
+                body.WaitingOnLabel,
+                body.WaitingOnPersonId,
+                body.WaitingOnOrganizationId,
+                body.FollowUpAt,
+                body.Cadence,
+                setStatusWaiting: body.SetStatusWaiting != false,
+                body.Actor ?? "agent",
+                MapProvenance(body.Provenance));
+
+            hub.Publish(new OrbitEvent
+            {
+                Type = "task.waiting_on.set",
+                Payload = new { taskId = result.TaskId, projectId = result.ProjectId },
+            });
+
+            return Results.Json(new { tool = "orbit_set_waiting_on", requestId, waiting = result });
+        }
+        catch (ArgumentException ex)
+        {
+            return MutationError(ex, requestId);
+        }
+    }
+
+    private static IResult ClearWaitingOn(
+        ClearWaitingOnBody? body,
+        OrbitMutationStore mutations,
+        EventHub hub,
+        HttpContext http)
+    {
+        var requestId = ApiKeyMiddleware.GetRequestId(http);
+        try
+        {
+            if (body is null || string.IsNullOrWhiteSpace(body.TaskId ?? body.Id))
+            {
+                return Results.Json(
+                    ApiErrors.Create(ApiErrorCodes.BadRequest, "Body field 'taskId' (or 'id') is required.", requestId),
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            if (string.IsNullOrWhiteSpace(body.EvidenceRef))
+            {
+                return Results.Json(
+                    ApiErrors.Create(
+                        ApiErrorCodes.BadRequest,
+                        "Body field 'evidenceRef' is required (note, email, or short proof).",
+                        requestId),
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            var result = mutations.ClearWaitingOn(
+                body.TaskId ?? body.Id!,
+                body.EvidenceRef,
+                resumeActive: body.ResumeActive != false,
+                body.Actor ?? "agent",
+                MapProvenance(body.Provenance));
+
+            hub.Publish(new OrbitEvent
+            {
+                Type = "task.waiting_on.cleared",
+                Payload = new { taskId = result.TaskId, projectId = result.ProjectId },
+            });
+
+            return Results.Json(new { tool = "orbit_clear_waiting_on", requestId, waiting = result });
+        }
+        catch (ArgumentException ex)
+        {
+            return MutationError(ex, requestId);
+        }
+    }
+
     private static IResult GetTaskDependencies(string? taskId, TaskDependencyStore dependencies, HttpContext http)
     {
         var requestId = ApiKeyMiddleware.GetRequestId(http);
@@ -1572,6 +1719,9 @@ public static class AgentToolEndpoints
         expects = edge.Dependency.Expects,
         confidence = edge.Dependency.Confidence,
         evidenceRef = edge.Dependency.EvidenceRef,
+        followUpAt = edge.Dependency.FollowUpAt,
+        cadence = edge.Dependency.Cadence,
+        satisfiedAt = edge.Dependency.SatisfiedAt,
         createdBy = edge.Dependency.CreatedBy,
         createdAt = edge.Dependency.CreatedAt,
         taskId = edge.OtherTaskId,
@@ -1579,7 +1729,7 @@ public static class AgentToolEndpoints
         status = edge.OtherTaskStatus,
         nextAction = edge.OtherTaskNextAction,
         projectId = edge.OtherTaskProjectId,
-        satisfied = edge.OtherTaskIsDone,
+        satisfied = edge.IsSatisfied,
     };
 
     private static IResult SuggestTaskLinks(
@@ -1689,6 +1839,10 @@ public static class AgentToolEndpoints
 
         public string? EvidenceRef { get; set; }
 
+        public string? FollowUpAt { get; set; }
+
+        public string? Cadence { get; set; }
+
         public string? Actor { get; set; }
 
         public MutationProvenanceBody? Provenance { get; set; }
@@ -1697,6 +1851,55 @@ public static class AgentToolEndpoints
     private sealed class UnlinkTasksBody
     {
         public string? DependencyId { get; set; }
+
+        public string? Actor { get; set; }
+
+        public MutationProvenanceBody? Provenance { get; set; }
+    }
+
+    private sealed class SatisfyTaskDependencyBody
+    {
+        public string? DependencyId { get; set; }
+
+        public string? EvidenceRef { get; set; }
+
+        public string? Actor { get; set; }
+
+        public MutationProvenanceBody? Provenance { get; set; }
+    }
+
+    private sealed class SetWaitingOnBody
+    {
+        public string? Id { get; set; }
+
+        public string? TaskId { get; set; }
+
+        public string? WaitingOnLabel { get; set; }
+
+        public string? WaitingOnPersonId { get; set; }
+
+        public string? WaitingOnOrganizationId { get; set; }
+
+        public string? FollowUpAt { get; set; }
+
+        public string? Cadence { get; set; }
+
+        public bool? SetStatusWaiting { get; set; }
+
+        public string? Actor { get; set; }
+
+        public MutationProvenanceBody? Provenance { get; set; }
+    }
+
+    private sealed class ClearWaitingOnBody
+    {
+        public string? Id { get; set; }
+
+        public string? TaskId { get; set; }
+
+        public string? EvidenceRef { get; set; }
+
+        public bool? ResumeActive { get; set; }
 
         public string? Actor { get; set; }
 
@@ -1781,6 +1984,12 @@ public static class AgentToolEndpoints
         public string? NextAction { get; set; }
 
         public string? Body { get; set; }
+
+        public string? SourceKind { get; set; }
+
+        public double? SourceConfidence { get; set; }
+
+        public string? SourceMatchReason { get; set; }
 
         public string? Actor { get; set; }
 

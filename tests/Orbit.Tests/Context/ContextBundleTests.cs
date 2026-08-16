@@ -270,6 +270,7 @@ public sealed class ContextBundleTests
         suggestions.Reject(suggestion.Id, actor: "test");
         var facts = EmailRelationMemory.ListRecentFactLines(memory, limit: 5);
         Assert.Contains(facts, f => f.Contains("NOT related", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(facts, f => f.Contains("suggestion-train", StringComparison.OrdinalIgnoreCase));
 
         var accept = suggestions.Create(new CreateSuggestionRequest
         {
@@ -284,6 +285,34 @@ public sealed class ContextBundleTests
         facts = EmailRelationMemory.ListRecentFactLines(memory, limit: 10);
         Assert.Contains(facts, f => f.Contains("related to task", StringComparison.OrdinalIgnoreCase)
                                     && !f.Contains("NOT related", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AcceptReject_AssignSuggestion_WritesTrainingMemory()
+    {
+        using var temp = new TempDb();
+        var factory = OpenMigrated(temp);
+        var ids = new DemoGraphSeed(factory).Seed();
+        var memory = new OperatorMemoryStore(factory);
+        var suggestions = new SuggestionStore(factory, memory);
+
+        var suggestion = suggestions.Create(new CreateSuggestionRequest
+        {
+            SuggestionType = SuggestionTypes.AssignToProject,
+            Summary = "Note belongs on Harbor",
+            PayloadJson = """{"noteId":"n1","projectId":"p1"}""",
+            ProjectId = ids.HarborProjectId,
+            Confidence = 0.4,
+        });
+
+        suggestions.Reject(suggestion.Id, actor: "test");
+        var facts = EmailRelationMemory.ListRecentFactLines(memory, limit: 5);
+        Assert.Contains(facts, f => f.Contains("REJECTED", StringComparison.Ordinal)
+                                    && f.Contains("assign_to_project", StringComparison.Ordinal));
+
+        EmailRelationMemory.RememberAlways(memory, suggestion);
+        facts = EmailRelationMemory.ListRecentFactLines(memory, limit: 10);
+        Assert.Contains(facts, f => f.Contains("ALWAYS apply", StringComparison.OrdinalIgnoreCase));
     }
 
     private static void LinkEmailExplicit(SqliteConnectionFactory factory, string emailId, string projectId)

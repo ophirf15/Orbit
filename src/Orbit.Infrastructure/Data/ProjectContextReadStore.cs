@@ -64,7 +64,10 @@ public sealed class ProjectContextReadStore
         cmd.CommandText =
             """
             SELECT id, title, status, next_action, body, project_id, due_at, priority, urgency,
-                   source_kind, source_confidence, source_match_reason
+                   source_kind, source_confidence, source_match_reason,
+                   waiting_on_label, waiting_on_person_id, waiting_on_organization_id,
+                   waiting_follow_up_at, waiting_cadence, waiting_satisfied_at, waiting_evidence_ref,
+                   created_at, updated_at
             FROM tasks
             WHERE id = $id AND archived_at IS NULL
             LIMIT 1;
@@ -90,6 +93,15 @@ public sealed class ProjectContextReadStore
             SourceKind = reader.IsDBNull(9) ? null : reader.GetString(9),
             SourceConfidence = reader.IsDBNull(10) ? null : reader.GetDouble(10),
             SourceMatchReason = reader.IsDBNull(11) ? null : reader.GetString(11),
+            WaitingOnLabel = reader.IsDBNull(12) ? null : reader.GetString(12),
+            WaitingOnPersonId = reader.IsDBNull(13) ? null : reader.GetString(13),
+            WaitingOnOrganizationId = reader.IsDBNull(14) ? null : reader.GetString(14),
+            WaitingFollowUpAt = reader.IsDBNull(15) ? null : reader.GetString(15),
+            WaitingCadence = reader.IsDBNull(16) ? null : reader.GetString(16),
+            WaitingSatisfiedAt = reader.IsDBNull(17) ? null : reader.GetString(17),
+            WaitingEvidenceRef = reader.IsDBNull(18) ? null : reader.GetString(18),
+            CreatedAt = reader.IsDBNull(19) ? null : reader.GetString(19),
+            UpdatedAt = reader.IsDBNull(20) ? null : reader.GetString(20),
         };
     }
 
@@ -158,7 +170,7 @@ public sealed class ProjectContextReadStore
         using var cmd = connection.CreateCommand();
         cmd.CommandText =
             """
-            SELECT id, title, status, next_action, body, due_at, priority, urgency
+            SELECT id, title, status, next_action, body, due_at, priority, urgency, waiting_on_label
             FROM tasks
             WHERE project_id = $p
               AND archived_at IS NULL
@@ -195,7 +207,7 @@ public sealed class ProjectContextReadStore
         using var cmd = connection.CreateCommand();
         cmd.CommandText =
             """
-            SELECT id, title, status, next_action, body, due_at, priority, urgency
+            SELECT id, title, status, next_action, body, due_at, priority, urgency, waiting_on_label
             FROM tasks
             WHERE project_id = $p
               AND archived_at IS NULL
@@ -226,6 +238,7 @@ public sealed class ProjectContextReadStore
         DueAt = reader.IsDBNull(5) ? null : reader.GetString(5),
         Priority = reader.IsDBNull(6) ? null : reader.GetInt32(6),
         Urgency = reader.IsDBNull(7) ? null : reader.GetInt32(7),
+        WaitingOnLabel = reader.FieldCount > 8 && !reader.IsDBNull(8) ? reader.GetString(8) : null,
     };
 
     private static IReadOnlyList<ContextNoteRecord> LoadNotes(SqliteConnection connection, string projectId)

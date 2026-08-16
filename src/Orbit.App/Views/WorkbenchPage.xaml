@@ -99,6 +99,8 @@
                 x:Name="HermesStrip"
                 Grid.Row="1"
                 ConcernClicked="HermesStrip_ConcernClicked"
+                DismissLowConfidenceRequested="HermesStrip_DismissLowConfidenceRequested"
+                OpenReviewRequested="HermesStrip_OpenReviewRequested"
                 RefreshRequested="HermesStrip_RefreshRequested" />
 
             <Grid x:Name="WorkbenchBody" Grid.Row="2" ColumnSpacing="12">
@@ -117,6 +119,7 @@
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
                             </Grid.RowDefinitions>
@@ -172,9 +175,100 @@
                                 </DataTemplate>
                             </TreeView.ItemTemplate>
                         </TreeView>
+                        <Expander
+                            x:Name="ReviewQueueExpander"
+                            Grid.Row="2"
+                            HorizontalAlignment="Stretch"
+                            HorizontalContentAlignment="Stretch"
+                            IsExpanded="False"
+                            Visibility="Collapsed">
+                            <Expander.Header>
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock
+                                        x:Name="ReviewQueueHeaderText"
+                                        VerticalAlignment="Center"
+                                        FontWeight="SemiBold"
+                                        Text="Review queue" />
+                                    <Button
+                                        x:Name="ReviewDismissAllButton"
+                                        Grid.Column="1"
+                                        Click="ReviewDismissAllButton_Click"
+                                        Content="Dismiss all"
+                                        Style="{StaticResource SubtleButtonStyle}"
+                                        ToolTipService.ToolTip="Reject all low-confidence suggestions (teaches Hermes what not to propose)" />
+                                </Grid>
+                            </Expander.Header>
+                            <StackPanel Spacing="6" Padding="0,6,0,0">
+                                <TextBlock
+                                    Opacity="0.65"
+                                    Style="{StaticResource CaptionTextBlockStyle}"
+                                    Text="Accept, reject, or always — each decision trains Hermes."
+                                    TextWrapping="Wrap" />
+                                <ListView
+                                    x:Name="ReviewQueueList"
+                                    MaxHeight="220"
+                                    AutomationProperties.Name="Suggestion review queue"
+                                    SelectionMode="None">
+                                    <ListView.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:PendingSuggestionVm">
+                                            <Grid Margin="0,0,0,8" ColumnSpacing="8" RowSpacing="2">
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                </Grid.RowDefinitions>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock
+                                                    FontWeight="SemiBold"
+                                                    Text="{x:Bind Summary}"
+                                                    TextTrimming="CharacterEllipsis"
+                                                    TextWrapping="Wrap" />
+                                                <TextBlock
+                                                    Grid.Row="1"
+                                                    Opacity="0.65"
+                                                    Style="{StaticResource CaptionTextBlockStyle}"
+                                                    Text="{x:Bind MetaLine}"
+                                                    TextTrimming="CharacterEllipsis" />
+                                                <StackPanel
+                                                    Grid.Row="2"
+                                                    Grid.ColumnSpan="2"
+                                                    Orientation="Horizontal"
+                                                    Spacing="6"
+                                                    Margin="0,4,0,0">
+                                                    <Button
+                                                        Click="ReviewAcceptButton_Click"
+                                                        Content="Accept"
+                                                        Style="{StaticResource AccentButtonStyle}"
+                                                        Tag="{x:Bind Id}"
+                                                        ToolTipService.ToolTip="Apply this suggestion and teach Hermes it was right" />
+                                                    <Button
+                                                        Click="ReviewRejectButton_Click"
+                                                        Content="Reject"
+                                                        Tag="{x:Bind Id}"
+                                                        ToolTipService.ToolTip="Reject and teach Hermes not to propose this again" />
+                                                    <Button
+                                                        Click="ReviewAlwaysButton_Click"
+                                                        Content="Always"
+                                                        Style="{StaticResource SubtleButtonStyle}"
+                                                        Tag="{x:Bind Id}"
+                                                        ToolTipService.ToolTip="Accept and create a standing rule for similar cases" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListView.ItemTemplate>
+                                </ListView>
+                            </StackPanel>
+                        </Expander>
                         <TextBox
                             x:Name="AgentInputBox"
-                            Grid.Row="2"
+                            Grid.Row="3"
                             AcceptsReturn="False"
                             AutomationProperties.Name="Ask, capture, or command Orbit"
                             CornerRadius="10"
@@ -183,7 +277,7 @@
                             MinHeight="40" />
                         <TextBlock
                             x:Name="AgentQuickReply"
-                            Grid.Row="3"
+                            Grid.Row="4"
                             MaxHeight="96"
                             FontSize="12"
                             Opacity="0.85"

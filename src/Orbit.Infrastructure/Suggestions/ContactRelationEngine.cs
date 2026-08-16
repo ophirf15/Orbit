@@ -143,6 +143,7 @@ public sealed class ContactRelationEngine
                     SuggestionType = SuggestionTypes.ReportingRelationship,
                     Summary = summary,
                     PayloadJson = payload,
+                    GroupKey = SuggestionHygiene.ReportingRelationshipKey(juniorId, seniorId),
                     Confidence = 0.45,
                 }));
                 existing.Add((juniorId, seniorId));

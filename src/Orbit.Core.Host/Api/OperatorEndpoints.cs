@@ -437,6 +437,7 @@ public static class OperatorEndpoints
         AcceptAlwaysBody? body,
         SuggestionStore suggestions,
         StandingRulesStore rules,
+        OperatorMemoryStore memory,
         HttpContext http)
     {
         var requestId = ApiKeyMiddleware.GetRequestId(http);
@@ -455,6 +456,15 @@ public static class OperatorEndpoints
                 Enabled = true,
                 RequireConfirm = false,
             });
+            try
+            {
+                EmailRelationMemory.RememberAlways(memory, suggestion);
+            }
+            catch
+            {
+                // Training memory is best-effort — accept + rule already committed.
+            }
+
             return Results.Json(new
             {
                 suggestion = new

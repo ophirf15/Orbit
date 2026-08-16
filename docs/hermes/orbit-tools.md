@@ -115,9 +115,10 @@ concerns list (concerns aren't individually revisioned yet, so the whole compact
 }
 ```
 
-`requestId` is per-request and must be excluded before hashing the `snapshot` — hash `schema` + `changeCursor` +
-`projects` + `tasks` + `meetings` only. `changeCursor` is the only field that moves without a semantic mutation
-being reflected elsewhere in the payload.
+`requestId` is per-request and must be excluded before hashing. The pulse monitor hashes a **stable semantic surface** only:
+`schema` + `projects` + `tasks` + `meetings` (id/title). It intentionally omits `changeCursor` and
+`attentionScore` — those move on calendar sync / clock buckets without work-graph changes. Wake also
+fires when `/v1/pulse/delta` reports material entity changes since the last cursor.
 
 
 ### Calendar HTTP

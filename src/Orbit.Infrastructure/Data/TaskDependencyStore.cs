@@ -23,9 +23,17 @@ public sealed class TaskDependencyRecord
 
     public string? EvidenceRef { get; init; }
 
+    public string? FollowUpAt { get; init; }
+
+    public string? Cadence { get; init; }
+
+    public string? SatisfiedAt { get; init; }
+
     public required string CreatedBy { get; init; }
 
     public required string CreatedAt { get; init; }
+
+    public bool IsExplicitlySatisfied => !string.IsNullOrWhiteSpace(SatisfiedAt);
 }
 
 /// <summary>A dependency joined with the counterpart task, from one task's point of view.</summary>
@@ -50,6 +58,9 @@ public sealed class TaskDependencyEdge
     public bool OtherTaskIsDone =>
         string.Equals(OtherTaskStatus, TaskStatuses.Complete, StringComparison.Ordinal)
         || string.Equals(OtherTaskStatus, TaskStatuses.Archived, StringComparison.Ordinal);
+
+    /// <summary>Satisfied via predecessor done or explicit clear-with-evidence.</summary>
+    public bool IsSatisfied => OtherTaskIsDone || Dependency.IsExplicitlySatisfied;
 }
 
 /// <summary>A gating dependency whose predecessor is finished while the successor is still open.</summary>
@@ -79,10 +90,10 @@ public sealed class TaskDependencyReadyRow
 public sealed class TaskDependencyStore
 {
     private const string SelectColumns =
-        "id, predecessor_task_id, successor_task_id, dependency_type, reason, expects, confidence, evidence_ref, created_by, created_at";
+        "id, predecessor_task_id, successor_task_id, dependency_type, reason, expects, confidence, evidence_ref, created_by, created_at, follow_up_at, cadence, satisfied_at";
 
     private const string SelectColumnsAliasD =
-        "d.id, d.predecessor_task_id, d.successor_task_id, d.dependency_type, d.reason, d.expects, d.confidence, d.evidence_ref, d.created_by, d.created_at";
+        "d.id, d.predecessor_task_id, d.successor_task_id, d.dependency_type, d.reason, d.expects, d.confidence, d.evidence_ref, d.created_by, d.created_at, d.follow_up_at, d.cadence, d.satisfied_at";
 
     private readonly SqliteConnectionFactory _factory;
 
@@ -96,6 +107,8 @@ public sealed class TaskDependencyStore
         string? expects = null,
         double? confidence = null,
         string? evidenceRef = null,
+        string? followUpAt = null,
+        string? cadence = null,
         string? actor = null,
         MutationProvenance? provenance = null)
     {
@@ -126,6 +139,8 @@ public sealed class TaskDependencyStore
             expects,
             confidence,
             evidenceRef,
+            followUpAt,
+            cadence,
             requestedBy,
             now);
 
@@ -143,6 +158,8 @@ public sealed class TaskDependencyStore
                 reason = Trimmed(reason),
                 expects = Trimmed(expects),
                 evidenceRef = Trimmed(evidenceRef),
+                followUpAt = Trimmed(followUpAt),
+                cadence = Trimmed(cadence),
             },
             now,
             provenance);
@@ -150,6 +167,33 @@ public sealed class TaskDependencyStore
         tx.Commit();
         return Get(id) ?? throw new InvalidOperationException("Dependency was not readable after insert.");
     }
+
+    internal static string LinkCore(
+        SqliteConnection connection,
+        SqliteTransaction tx,
+        string predecessorTaskId,
+        string successorTaskId,
+        string? dependencyType,
+        string? reason,
+        string? expects,
+        double? confidence,
+        string? evidenceRef,
+        string requestedBy,
+        string now) =>
+        LinkCore(
+            connection,
+            tx,
+            predecessorTaskId,
+            successorTaskId,
+            dependencyType,
+            reason,
+            expects,
+            confidence,
+            evidenceRef,
+            followUpAt: null,
+            cadence: null,
+            requestedBy,
+            now);
 
     /// <summary>
     /// Validates and upserts one dependency edge inside an existing transaction, returning its id.
@@ -165,6 +209,8 @@ public sealed class TaskDependencyStore
         string? expects,
         double? confidence,
         string? evidenceRef,
+        string? followUpAt,
+        string? cadence,
         string requestedBy,
         string now)
     {
@@ -183,7 +229,8 @@ public sealed class TaskDependencyStore
         if (existing is not null)
         {
             // Idempotent: enrich a previously thin edge instead of duplicating it.
-            if (reason is not null || expects is not null || confidence is not null || evidenceRef is not null)
+            if (reason is not null || expects is not null || confidence is not null || evidenceRef is not null
+                || followUpAt is not null || cadence is not null)
             {
                 using var enrich = connection.CreateCommand();
                 enrich.Transaction = tx;
@@ -194,6 +241,8 @@ public sealed class TaskDependencyStore
                         expects = COALESCE($expects, expects),
                         confidence = COALESCE($confidence, confidence),
                         evidence_ref = COALESCE($evidence, evidence_ref),
+                        follow_up_at = COALESCE($follow, follow_up_at),
+                        cadence = COALESCE($cadence, cadence),
                         updated_at = $t
                     WHERE id = $id;
                     """;
@@ -201,6 +250,8 @@ public sealed class TaskDependencyStore
                 enrich.Parameters.AddWithValue("$expects", (object?)Trimmed(expects) ?? DBNull.Value);
                 enrich.Parameters.AddWithValue("$confidence", (object?)confidence ?? DBNull.Value);
                 enrich.Parameters.AddWithValue("$evidence", (object?)Trimmed(evidenceRef) ?? DBNull.Value);
+                enrich.Parameters.AddWithValue("$follow", (object?)Trimmed(followUpAt) ?? DBNull.Value);
+                enrich.Parameters.AddWithValue("$cadence", (object?)Trimmed(cadence) ?? DBNull.Value);
                 enrich.Parameters.AddWithValue("$t", now);
                 enrich.Parameters.AddWithValue("$id", existing.Id);
                 enrich.ExecuteNonQuery();
@@ -232,10 +283,12 @@ public sealed class TaskDependencyStore
             """
             INSERT INTO task_dependencies (
               id, predecessor_task_id, successor_task_id, dependency_type,
-              reason, expects, confidence, evidence_ref, created_by, created_at, updated_at)
+              reason, expects, confidence, evidence_ref, follow_up_at, cadence,
+              created_by, created_at, updated_at)
             VALUES (
               $id, $pred, $succ, $type,
-              $reason, $expects, $confidence, $evidence, $by, $t, $t);
+              $reason, $expects, $confidence, $evidence, $follow, $cadence,
+              $by, $t, $t);
             """;
         cmd.Parameters.AddWithValue("$id", id);
         cmd.Parameters.AddWithValue("$pred", predecessor);
@@ -245,10 +298,73 @@ public sealed class TaskDependencyStore
         cmd.Parameters.AddWithValue("$expects", (object?)Trimmed(expects) ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$confidence", (object?)confidence ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$evidence", (object?)Trimmed(evidenceRef) ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$follow", (object?)Trimmed(followUpAt) ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$cadence", (object?)Trimmed(cadence) ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$by", requestedBy);
         cmd.Parameters.AddWithValue("$t", now);
         cmd.ExecuteNonQuery();
         return id;
+    }
+
+    /// <summary>
+    /// Marks a dependency waiting edge satisfied with evidence without deleting the link.
+    /// Preserves expects/reason text.
+    /// </summary>
+    public TaskDependencyRecord Satisfy(
+        string dependencyId,
+        string evidenceRef,
+        string? actor = null,
+        MutationProvenance? provenance = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dependencyId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(evidenceRef);
+        var evidence = Trimmed(evidenceRef)
+            ?? throw new ArgumentException("evidenceRef is required.", nameof(evidenceRef));
+
+        var existing = Get(dependencyId)
+            ?? throw new ArgumentException("Dependency was not found.", nameof(dependencyId));
+
+        var requestedBy = NormalizeActor(provenance?.ResolveActor(actor) ?? actor);
+        var now = DateTime.UtcNow.ToString("O");
+
+        using var connection = _factory.CreateConnection();
+        using var tx = connection.BeginTransaction();
+        using (var cmd = connection.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText =
+                """
+                UPDATE task_dependencies
+                SET satisfied_at = $sat,
+                    evidence_ref = $ev,
+                    updated_at = $t
+                WHERE id = $id;
+                """;
+            cmd.Parameters.AddWithValue("$sat", now);
+            cmd.Parameters.AddWithValue("$ev", evidence);
+            cmd.Parameters.AddWithValue("$t", now);
+            cmd.Parameters.AddWithValue("$id", existing.Id);
+            cmd.ExecuteNonQuery();
+        }
+
+        WriteAudit(
+            connection,
+            tx,
+            "task.dependency.satisfied",
+            existing.Id,
+            requestedBy,
+            new
+            {
+                evidenceRef = evidence,
+                expects = existing.Expects,
+                predecessorTaskId = existing.PredecessorTaskId,
+                successorTaskId = existing.SuccessorTaskId,
+            },
+            now,
+            provenance);
+        tx.Commit();
+
+        return Get(existing.Id) ?? throw new InvalidOperationException("Dependency was not readable after satisfy.");
     }
 
     public bool Unlink(string dependencyId, string? actor = null, MutationProvenance? provenance = null)
@@ -336,12 +452,12 @@ public sealed class TaskDependencyStore
             edges.Add(new TaskDependencyEdge
             {
                 Dependency = ReadRecord(reader),
-                AnchorIsSuccessor = reader.GetInt64(10) == 1,
-                OtherTaskId = reader.GetString(11),
-                OtherTaskTitle = reader.GetString(12),
-                OtherTaskStatus = reader.GetString(13),
-                OtherTaskProjectId = reader.IsDBNull(14) ? null : reader.GetString(14),
-                OtherTaskNextAction = reader.IsDBNull(15) ? null : reader.GetString(15),
+                AnchorIsSuccessor = reader.GetInt64(13) == 1,
+                OtherTaskId = reader.GetString(14),
+                OtherTaskTitle = reader.GetString(15),
+                OtherTaskStatus = reader.GetString(16),
+                OtherTaskProjectId = reader.IsDBNull(17) ? null : reader.GetString(17),
+                OtherTaskNextAction = reader.IsDBNull(18) ? null : reader.GetString(18),
             });
         }
 
@@ -368,6 +484,7 @@ public sealed class TaskDependencyStore
             INNER JOIN tasks p ON p.id = d.predecessor_task_id
             INNER JOIN tasks s ON s.id = d.successor_task_id
             WHERE d.dependency_type IN ($blocks, $informs)
+              AND d.satisfied_at IS NULL
               AND p.archived_at IS NULL
               AND s.archived_at IS NULL
               AND p.status = $complete
@@ -387,13 +504,13 @@ public sealed class TaskDependencyStore
             rows.Add(new TaskDependencyReadyRow
             {
                 Dependency = ReadRecord(reader),
-                PredecessorTitle = reader.GetString(10),
-                PredecessorStatus = reader.GetString(11),
-                PredecessorNextAction = reader.IsDBNull(12) ? null : reader.GetString(12),
-                PredecessorBody = reader.IsDBNull(13) ? null : reader.GetString(13),
-                SuccessorTitle = reader.GetString(14),
-                SuccessorStatus = reader.GetString(15),
-                SuccessorProjectId = reader.IsDBNull(16) ? null : reader.GetString(16),
+                PredecessorTitle = reader.GetString(13),
+                PredecessorStatus = reader.GetString(14),
+                PredecessorNextAction = reader.IsDBNull(15) ? null : reader.GetString(15),
+                PredecessorBody = reader.IsDBNull(16) ? null : reader.GetString(16),
+                SuccessorTitle = reader.GetString(17),
+                SuccessorStatus = reader.GetString(18),
+                SuccessorProjectId = reader.IsDBNull(19) ? null : reader.GetString(19),
             });
         }
 
@@ -511,6 +628,9 @@ public sealed class TaskDependencyStore
         EvidenceRef = reader.IsDBNull(7) ? null : reader.GetString(7),
         CreatedBy = reader.IsDBNull(8) ? CreatedByActors.Agent : reader.GetString(8),
         CreatedAt = reader.GetString(9),
+        FollowUpAt = reader.IsDBNull(10) ? null : reader.GetString(10),
+        Cadence = reader.IsDBNull(11) ? null : reader.GetString(11),
+        SatisfiedAt = reader.IsDBNull(12) ? null : reader.GetString(12),
     };
 
     private static void WriteAudit(

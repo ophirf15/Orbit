@@ -779,17 +779,22 @@ public sealed class ContactStore
             }
         }
 
+        var groupKey = string.CompareOrdinal(candidatePersonId, existingPersonId) <= 0
+            ? $"{candidatePersonId}|{existingPersonId}"
+            : $"{existingPersonId}|{candidatePersonId}";
+
         using var insert = connection.CreateCommand();
         insert.CommandText =
             """
             INSERT INTO agent_suggestions (
-              id, suggestion_type, summary, payload_json, status, confidence, created_at, updated_at)
-            VALUES ($id, $type, $summary, $payload, 'pending', 0.55, $t, $t);
+              id, suggestion_type, summary, payload_json, group_key, status, confidence, created_at, updated_at)
+            VALUES ($id, $type, $summary, $payload, $group, 'pending', 0.55, $t, $t);
             """;
         insert.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("D"));
         insert.Parameters.AddWithValue("$type", ContactSuggestionTypes.ContactMerge);
         insert.Parameters.AddWithValue("$summary", $"Possible contact merge: {reason}");
         insert.Parameters.AddWithValue("$payload", payload);
+        insert.Parameters.AddWithValue("$group", groupKey);
         insert.Parameters.AddWithValue("$t", now);
         insert.ExecuteNonQuery();
     }

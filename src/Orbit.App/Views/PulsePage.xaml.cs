@@ -12,6 +12,7 @@ public sealed partial class PulsePage : Page
 {
     private IReadOnlyList<PulseConcernVm> _allConcerns = [];
     private IReadOnlyList<OrbitProjectVm> _projects = [];
+    private IReadOnlyList<PendingSuggestionVm> _lowConfidence = [];
     private string? _filterProjectId;
 
     public PulsePage()
@@ -88,6 +89,9 @@ public sealed partial class PulsePage : Page
             {
                 DayBriefText.Text = "Could not load pulse from Core Host.";
                 _allConcerns = [];
+                _lowConfidence = [];
+                LowConfidenceList.ItemsSource = _lowConfidence;
+                LowConfidencePanel.Visibility = Visibility.Collapsed;
                 BindBriefing(null);
                 ApplyConcernFilter();
                 GeneratedAtText.Text = string.Empty;
@@ -125,6 +129,14 @@ public sealed partial class PulsePage : Page
             UnmatchedMailHeader.Text = unmatched.Count == 0
                 ? "Unmatched mail"
                 : $"Unmatched mail · {unmatched.Count}";
+
+            _lowConfidence = await client.GetSuggestionsAsync(queue: "low");
+            LowConfidenceList.ItemsSource = _lowConfidence;
+            LowConfidencePanel.Visibility = _lowConfidence.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            LowConfidenceHeader.Text = _lowConfidence.Count == 0
+                ? "Low-confidence suggestions"
+                : $"Low-confidence · {_lowConfidence.Count}";
+            DismissLowButton.IsEnabled = _lowConfidence.Count > 0;
 
             BindBriefing(pulse.Briefing);
             ApplyConcernFilter();
@@ -292,6 +304,31 @@ public sealed partial class PulsePage : Page
         catch (Exception)
         {
             StatusText.Text = "Could not assign unmatched mail.";
+        }
+    }
+
+    private async void DismissLowButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_lowConfidence.Count == 0)
+        {
+            return;
+        }
+
+        DismissLowButton.IsEnabled = false;
+        try
+        {
+            using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+            var ids = _lowConfidence.Select(s => s.Id).ToList();
+            var result = await client.BatchDecideSuggestionsAsync(ids, "reject");
+            StatusText.Text = result.Rejected > 0
+                ? $"Dismissed {result.Rejected} low-confidence suggestion(s)."
+                : "Could not dismiss low-confidence suggestions.";
+            await LoadAsync();
+        }
+        catch (Exception)
+        {
+            StatusText.Text = "Could not dismiss low-confidence suggestions.";
+            DismissLowButton.IsEnabled = _lowConfidence.Count > 0;
         }
     }
 }

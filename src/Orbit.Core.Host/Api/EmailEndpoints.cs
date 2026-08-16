@@ -258,14 +258,22 @@ public static class EmailEndpoints
                     projectIds,
                     memo).ConfigureAwait(false);
 
-                // Always open a Host run so the Workbench banner can track completion.
-                // Notify Hermes via webhook when possible, but always RequestWake as well —
-                // webhook can ACK without starting a session (no dashboard thread, banner hangs).
+                // Token hygiene: webhook XOR Host wake — never both for the same ingest.
                 var opened = runs.Start(OperatorTriggers.EmailIngested, wakePayload);
-                runs.SetProgress(
-                    opened.Id,
-                    webhooked ? "Handed off to Hermes…" : "Queued — waking Hermes on Host…");
-                wake.RequestWake(OperatorTriggers.EmailIngested, wakePayload);
+                if (webhooked)
+                {
+                    runs.SetProgress(opened.Id, "Handed off to Hermes via webhook…");
+                    runs.Complete(
+                        opened.Id,
+                        OperatorRunStatuses.Skipped,
+                        briefingSummary: "Webhook delivered — Host wake suppressed.",
+                        errorText: null);
+                }
+                else
+                {
+                    runs.SetProgress(opened.Id, "Queued — waking Hermes on Host…");
+                    wake.RequestWake(OperatorTriggers.EmailIngested, wakePayload);
+                }
 
                 var dto = ToDto(record, requestId);
                 return Results.Json(new
@@ -445,13 +453,22 @@ public static class EmailEndpoints
                     projectIds,
                     memo).ConfigureAwait(false);
 
-                // Always open a Host run so the Workbench banner can track completion.
-                // Webhook can ACK without a Hermes session — Host wake is the reliability path.
+                // Token hygiene: webhook XOR Host wake — never both for the same ingest.
                 var opened = runs.Start(OperatorTriggers.EmailIngested, wakePayload);
-                runs.SetProgress(
-                    opened.Id,
-                    webhooked ? "Handed off to Hermes…" : "Queued — waking Hermes on Host…");
-                wake.RequestWake(OperatorTriggers.EmailIngested, wakePayload);
+                if (webhooked)
+                {
+                    runs.SetProgress(opened.Id, "Handed off to Hermes via webhook…");
+                    runs.Complete(
+                        opened.Id,
+                        OperatorRunStatuses.Skipped,
+                        briefingSummary: "Webhook delivered — Host wake suppressed.",
+                        errorText: null);
+                }
+                else
+                {
+                    runs.SetProgress(opened.Id, "Queued — waking Hermes on Host…");
+                    wake.RequestWake(OperatorTriggers.EmailIngested, wakePayload);
+                }
 
                 if (record.EnrichedPersonIds.Count > 0)
                 {

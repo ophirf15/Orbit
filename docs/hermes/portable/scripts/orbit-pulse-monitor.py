@@ -1,32 +1,24 @@
 #!/usr/bin/env python3
 """Orbit Pulse monitor script for the Hermes `orbit-pulse-monitor` cron job.
 
-Attached as the job's pre-check `script=` (ADR 0028 / plan 021 unit U4). Hermes
-runs this before the agent turn and reads a final stdout line of the form
-`{"wakeAgent": bool, ...}` to decide whether to spend an LLM call this tick:
+Attached as the job's pre-check `script=` (ADR 0028). Hermes runs this before the
+agent turn and reads a final stdout line `{"wakeAgent": bool, ...}`:
 
     https://hermes-agent.nousresearch.com/docs/user-guide/features/cron
-    (see "Skipping the agent entirely: wakeAgent")
 
-Behavior:
-  - Fetch a stable snapshot from Orbit Core (`GET /v1/agent/snapshot`), plus an
-    optional pulse delta (`GET /v1/pulse/delta?cursor=...`) once Core exposes it.
-  - Hash the canonical snapshot bytes and compare against the last successful
-    run's hash, stored under `$HERMES_HOME/state/orbit-pulse-monitor.json`.
-  - Unchanged hash -> print `{"wakeAgent": false}` only (no LLM run, no tokens).
-  - Changed / first run -> print `{"wakeAgent": true, "context": {...}}` so the
-    agent gets the snapshot without re-querying it.
-  - Core unreachable / HTTP error -> print a clear error JSON object and leave
-    `wakeAgent` unset (defaults to true) so an outage gets reported instead of
-    silently swallowed.
+Token hygiene (2026-08-12):
+  - Hash a **stable semantic surface** only: schema + projects + tasks + meetings
+    (id/title). Strip requestId, changeCursor, and attentionScore — those churn
+    without meaningful work-graph changes (calendar.synced, clock buckets).
+  - Prefer wake when the stable hash changes **or** pulse/delta lists material
+    entity changes (task/project / task.updated / operator.briefing).
+  - Pure calendar cursor bumps without semantic/material change → wakeAgent false.
+  - Core unreachable → wakeAgent false (log error; do not burn an LLM tick).
 
 Env:
   ORBIT_CORE_URL   Base URL for Orbit Core Host, e.g. http://127.0.0.1:8741
   ORBIT_API_KEY    Bearer token for Core Host
   HERMES_HOME      Optional; defaults to ~/.hermes (state file location only)
-
-No third-party dependencies — stdlib only, so this runs under any Hermes
-Python interpreter without a pip install step.
 """
 
 from __future__ import annotations
@@ -43,6 +35,22 @@ from typing import Any
 
 REQUEST_TIMEOUT_SECONDS = 15
 STATE_FILE_NAME = "orbit-pulse-monitor.json"
+
+# Delta rows that justify an LLM tick (ignore calendar.synced / heartbeat churn).
+MATERIAL_ENTITY_TYPES = frozenset({"task", "project", "note", "email", "blocker"})
+MATERIAL_SOURCE_EVENTS = frozenset(
+    {
+        "task.updated",
+        "task.created",
+        "task.moved",
+        "note.created",
+        "email.ingested",
+        "operator.briefing",
+        "project.updated",
+        "blocker.created",
+        "blocker.archived",
+    }
+)
 
 
 def hermes_home() -> Path:
@@ -94,6 +102,54 @@ def emit(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, sort_keys=True))
 
 
+def stable_hash_surface(snapshot: Any) -> dict[str, Any]:
+    """Strip volatile fields before hashing (see docs/hermes/orbit-tools.md)."""
+    if not isinstance(snapshot, dict):
+        return {"raw": snapshot}
+
+    meetings_in = snapshot.get("meetings") or []
+    meetings: list[dict[str, Any]] = []
+    if isinstance(meetings_in, list):
+        for m in meetings_in:
+            if not isinstance(m, dict):
+                continue
+            meetings.append(
+                {
+                    "id": m.get("id"),
+                    "title": m.get("title"),
+                    # attentionScore intentionally omitted — rescores with clock.
+                }
+            )
+
+    return {
+        "schema": snapshot.get("schema"),
+        "projects": snapshot.get("projects"),
+        "tasks": snapshot.get("tasks"),
+        "meetings": meetings,
+        # changeCursor / requestId omitted — cursor advances on calendar.synced.
+    }
+
+
+def snapshot_hash(snapshot: Any) -> str:
+    return hashlib.sha256(canonical_bytes(stable_hash_surface(snapshot))).hexdigest()
+
+
+def delta_is_material(delta: Any) -> bool:
+    if not isinstance(delta, dict):
+        return False
+    changed = delta.get("changed") or delta.get("events") or []
+    if not isinstance(changed, list) or not changed:
+        return False
+    for row in changed:
+        if not isinstance(row, dict):
+            continue
+        et = str(row.get("entityType") or "").strip().lower()
+        src = str(row.get("sourceEvent") or "").strip().lower()
+        if et in MATERIAL_ENTITY_TYPES or src in MATERIAL_SOURCE_EVENTS:
+            return True
+    return False
+
+
 def main() -> int:
     core_url = (os.environ.get("ORBIT_CORE_URL") or "").strip().rstrip("/")
     api_key = (os.environ.get("ORBIT_API_KEY") or "").strip()
@@ -101,6 +157,7 @@ def main() -> int:
     if not core_url or not api_key:
         emit(
             {
+                "wakeAgent": False,
                 "error": "missing_env",
                 "detail": "ORBIT_CORE_URL and ORBIT_API_KEY must be set for orbit-pulse-monitor.py.",
             }
@@ -112,6 +169,7 @@ def main() -> int:
     except urllib.error.HTTPError as exc:
         emit(
             {
+                "wakeAgent": False,
                 "error": "http_error",
                 "status": exc.code,
                 "detail": f"GET /v1/agent/snapshot failed: {exc.reason}",
@@ -121,13 +179,20 @@ def main() -> int:
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         emit(
             {
+                "wakeAgent": False,
                 "error": "unreachable",
                 "detail": f"Orbit Core unreachable at {core_url}: {exc}",
             }
         )
         return 0
     except ValueError as exc:
-        emit({"error": "bad_response", "detail": f"Non-JSON snapshot response: {exc}"})
+        emit(
+            {
+                "wakeAgent": False,
+                "error": "bad_response",
+                "detail": f"Non-JSON snapshot response: {exc}",
+            }
+        )
         return 0
 
     delta: Any = None
@@ -135,27 +200,40 @@ def main() -> int:
     cursor = state.get("cursor")
     try:
         delta_url = f"{core_url}/v1/pulse/delta"
-        if cursor:
+        if cursor is not None and str(cursor) != "":
             delta_url += f"?cursor={urllib.parse.quote(str(cursor))}"
         delta = http_get_json(delta_url, api_key)
     except Exception:
-        # Optional endpoint; Core may not expose it yet (plan unit U3). Never fatal.
         delta = None
 
-    snapshot_hash = hashlib.sha256(canonical_bytes(snapshot)).hexdigest()
+    current_hash = snapshot_hash(snapshot)
     previous_hash = state.get("snapshotHash")
 
     next_cursor = None
     if isinstance(delta, dict):
-        next_cursor = delta.get("nextCursor") or delta.get("cursor")
+        next_cursor = delta.get("nextCursor")
+        if next_cursor is None:
+            next_cursor = delta.get("cursor")
 
-    if snapshot_hash == previous_hash:
-        save_state({**state, "snapshotHash": snapshot_hash, "cursor": next_cursor or cursor})
-        emit({"wakeAgent": False})
+    hash_changed = previous_hash is None or current_hash != previous_hash
+    material = delta_is_material(delta) if previous_hash is not None else False
+
+    # First run: wake so Hermes baselines. Later: wake only on semantic or material delta.
+    should_wake = hash_changed or material
+
+    save_state(
+        {
+            **state,
+            "snapshotHash": current_hash,
+            "cursor": next_cursor if next_cursor is not None else cursor,
+        }
+    )
+
+    if not should_wake:
+        emit({"wakeAgent": False, "snapshotHash": current_hash})
         return 0
 
-    save_state({"snapshotHash": snapshot_hash, "cursor": next_cursor or cursor})
-    context: dict[str, Any] = {"snapshotHash": snapshot_hash, "snapshot": snapshot}
+    context: dict[str, Any] = {"snapshotHash": current_hash, "snapshot": snapshot}
     if delta is not None:
         context["delta"] = delta
     emit({"wakeAgent": True, "context": context})

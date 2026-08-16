@@ -608,6 +608,269 @@ public sealed class OrbitMutationStore
         return new MutationLinkResult { Id = id, RelationshipType = relationshipType.Trim() };
     }
 
+    /// <summary>
+    /// Sets or refreshes task-level waiting-on depth. Does not wipe blocker_summary.
+    /// Clears any prior satisfied stamp so the wait is open again.
+    /// </summary>
+    public MutationWaitingOnResult SetWaitingOn(
+        string taskId,
+        string? waitingOnLabel = null,
+        string? waitingOnPersonId = null,
+        string? waitingOnOrganizationId = null,
+        string? followUpAt = null,
+        string? cadence = null,
+        bool setStatusWaiting = true,
+        string? actor = null,
+        MutationProvenance? provenance = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(taskId);
+        var label = Trimmed(waitingOnLabel);
+        var personId = Trimmed(waitingOnPersonId);
+        var orgId = Trimmed(waitingOnOrganizationId);
+        var followUp = Trimmed(followUpAt);
+        var cadenceValue = Trimmed(cadence);
+        if (label is null && personId is null && orgId is null && followUp is null && cadenceValue is null)
+        {
+            throw new ArgumentException(
+                "At least one of waitingOnLabel, waitingOnPersonId, waitingOnOrganizationId, followUpAt, or cadence is required.");
+        }
+
+        var requestedBy = NormalizeActor(provenance?.ResolveActor(actor) ?? actor);
+        var now = DateTime.UtcNow.ToString("O");
+
+        using var connection = _factory.CreateConnection();
+        using var tx = connection.BeginTransaction();
+
+        string projectId;
+        string title;
+        string status;
+        string? currentLabel;
+        string? currentPerson;
+        string? currentOrg;
+        string? currentFollowUp;
+        string? currentCadence;
+        using (var find = connection.CreateCommand())
+        {
+            find.Transaction = tx;
+            find.CommandText =
+                """
+                SELECT project_id, title, status,
+                       waiting_on_label, waiting_on_person_id, waiting_on_organization_id,
+                       waiting_follow_up_at, waiting_cadence
+                FROM tasks
+                WHERE id = $id AND archived_at IS NULL
+                LIMIT 1;
+                """;
+            find.Parameters.AddWithValue("$id", taskId.Trim());
+            using var reader = find.ExecuteReader();
+            if (!reader.Read())
+            {
+                throw new ArgumentException("Task was not found.", nameof(taskId));
+            }
+
+            projectId = reader.GetString(0);
+            title = reader.GetString(1);
+            status = reader.GetString(2);
+            currentLabel = reader.IsDBNull(3) ? null : reader.GetString(3);
+            currentPerson = reader.IsDBNull(4) ? null : reader.GetString(4);
+            currentOrg = reader.IsDBNull(5) ? null : reader.GetString(5);
+            currentFollowUp = reader.IsDBNull(6) ? null : reader.GetString(6);
+            currentCadence = reader.IsDBNull(7) ? null : reader.GetString(7);
+        }
+
+        var newLabel = label ?? currentLabel;
+        var newPerson = personId ?? currentPerson;
+        var newOrg = orgId ?? currentOrg;
+        var newFollowUp = followUp ?? currentFollowUp;
+        var newCadence = cadenceValue ?? currentCadence;
+        var newStatus = setStatusWaiting ? TaskStatuses.Waiting : status;
+
+        using (var upd = connection.CreateCommand())
+        {
+            upd.Transaction = tx;
+            upd.CommandText =
+                """
+                UPDATE tasks
+                SET waiting_on_label = $label,
+                    waiting_on_person_id = $person,
+                    waiting_on_organization_id = $org,
+                    waiting_follow_up_at = $follow,
+                    waiting_cadence = $cadence,
+                    waiting_satisfied_at = NULL,
+                    status = $status,
+                    updated_at = $t
+                WHERE id = $id;
+                """;
+            upd.Parameters.AddWithValue("$label", (object?)newLabel ?? DBNull.Value);
+            upd.Parameters.AddWithValue("$person", (object?)newPerson ?? DBNull.Value);
+            upd.Parameters.AddWithValue("$org", (object?)newOrg ?? DBNull.Value);
+            upd.Parameters.AddWithValue("$follow", (object?)newFollowUp ?? DBNull.Value);
+            upd.Parameters.AddWithValue("$cadence", (object?)newCadence ?? DBNull.Value);
+            upd.Parameters.AddWithValue("$status", newStatus);
+            upd.Parameters.AddWithValue("$t", now);
+            upd.Parameters.AddWithValue("$id", taskId.Trim());
+            upd.ExecuteNonQuery();
+        }
+
+        WriteAudit(
+            connection,
+            tx,
+            "task.waiting_on.set",
+            EntityTypes.Task,
+            taskId.Trim(),
+            requestedBy,
+            new
+            {
+                waitingOnLabel = newLabel,
+                waitingOnPersonId = newPerson,
+                waitingOnOrganizationId = newOrg,
+                followUpAt = newFollowUp,
+                cadence = newCadence,
+                status = newStatus,
+            },
+            now,
+            provenance);
+        tx.Commit();
+
+        return new MutationWaitingOnResult
+        {
+            TaskId = taskId.Trim(),
+            ProjectId = projectId,
+            Title = title,
+            Status = newStatus,
+            WaitingOnLabel = newLabel,
+            WaitingOnPersonId = newPerson,
+            WaitingOnOrganizationId = newOrg,
+            FollowUpAt = newFollowUp,
+            Cadence = newCadence,
+            SatisfiedAt = null,
+            EvidenceRef = null,
+        };
+    }
+
+    /// <summary>
+    /// Marks task-level waiting satisfied with evidence. Preserves label/person/follow-up text.
+    /// Optionally returns status to active when it was waiting.
+    /// </summary>
+    public MutationWaitingOnResult ClearWaitingOn(
+        string taskId,
+        string? evidenceRef = null,
+        bool resumeActive = true,
+        string? actor = null,
+        MutationProvenance? provenance = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(taskId);
+        var evidence = Trimmed(evidenceRef);
+        if (evidence is null)
+        {
+            throw new ArgumentException("evidenceRef is required to clear waiting-on (note, email, or short proof).", nameof(evidenceRef));
+        }
+
+        var requestedBy = NormalizeActor(provenance?.ResolveActor(actor) ?? actor);
+        var now = DateTime.UtcNow.ToString("O");
+
+        using var connection = _factory.CreateConnection();
+        using var tx = connection.BeginTransaction();
+
+        string projectId;
+        string title;
+        string status;
+        string? label;
+        string? personId;
+        string? orgId;
+        string? followUp;
+        string? cadence;
+        using (var find = connection.CreateCommand())
+        {
+            find.Transaction = tx;
+            find.CommandText =
+                """
+                SELECT project_id, title, status,
+                       waiting_on_label, waiting_on_person_id, waiting_on_organization_id,
+                       waiting_follow_up_at, waiting_cadence
+                FROM tasks
+                WHERE id = $id AND archived_at IS NULL
+                LIMIT 1;
+                """;
+            find.Parameters.AddWithValue("$id", taskId.Trim());
+            using var reader = find.ExecuteReader();
+            if (!reader.Read())
+            {
+                throw new ArgumentException("Task was not found.", nameof(taskId));
+            }
+
+            projectId = reader.GetString(0);
+            title = reader.GetString(1);
+            status = reader.GetString(2);
+            label = reader.IsDBNull(3) ? null : reader.GetString(3);
+            personId = reader.IsDBNull(4) ? null : reader.GetString(4);
+            orgId = reader.IsDBNull(5) ? null : reader.GetString(5);
+            followUp = reader.IsDBNull(6) ? null : reader.GetString(6);
+            cadence = reader.IsDBNull(7) ? null : reader.GetString(7);
+        }
+
+        var newStatus = resumeActive
+            && string.Equals(status, TaskStatuses.Waiting, StringComparison.OrdinalIgnoreCase)
+            ? TaskStatuses.Active
+            : status;
+
+        using (var upd = connection.CreateCommand())
+        {
+            upd.Transaction = tx;
+            upd.CommandText =
+                """
+                UPDATE tasks
+                SET waiting_satisfied_at = $sat,
+                    waiting_evidence_ref = $ev,
+                    status = $status,
+                    updated_at = $t
+                WHERE id = $id;
+                """;
+            upd.Parameters.AddWithValue("$sat", now);
+            upd.Parameters.AddWithValue("$ev", evidence);
+            upd.Parameters.AddWithValue("$status", newStatus);
+            upd.Parameters.AddWithValue("$t", now);
+            upd.Parameters.AddWithValue("$id", taskId.Trim());
+            upd.ExecuteNonQuery();
+        }
+
+        WriteAudit(
+            connection,
+            tx,
+            "task.waiting_on.cleared",
+            EntityTypes.Task,
+            taskId.Trim(),
+            requestedBy,
+            new
+            {
+                evidenceRef = evidence,
+                waitingOnLabel = label,
+                status = newStatus,
+                preservedLabel = true,
+            },
+            now,
+            provenance);
+        tx.Commit();
+
+        return new MutationWaitingOnResult
+        {
+            TaskId = taskId.Trim(),
+            ProjectId = projectId,
+            Title = title,
+            Status = newStatus,
+            WaitingOnLabel = label,
+            WaitingOnPersonId = personId,
+            WaitingOnOrganizationId = orgId,
+            FollowUpAt = followUp,
+            Cadence = cadence,
+            SatisfiedAt = now,
+            EvidenceRef = evidence,
+        };
+    }
+
+    private static string? Trimmed(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
     public MutationBlockerResult SetBlocker(
         string summary,
         string? projectId,
@@ -752,6 +1015,31 @@ public sealed class MutationTaskResult
     public double? SourceConfidence { get; init; }
 
     public string? SourceMatchReason { get; init; }
+}
+
+public sealed class MutationWaitingOnResult
+{
+    public required string TaskId { get; init; }
+
+    public required string ProjectId { get; init; }
+
+    public required string Title { get; init; }
+
+    public required string Status { get; init; }
+
+    public string? WaitingOnLabel { get; init; }
+
+    public string? WaitingOnPersonId { get; init; }
+
+    public string? WaitingOnOrganizationId { get; init; }
+
+    public string? FollowUpAt { get; init; }
+
+    public string? Cadence { get; init; }
+
+    public string? SatisfiedAt { get; init; }
+
+    public string? EvidenceRef { get; init; }
 }
 
 public sealed class MutationWorkstreamResult

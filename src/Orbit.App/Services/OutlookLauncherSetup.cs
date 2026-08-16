@@ -64,7 +64,7 @@ public static class OutlookLauncherSetup
         }
         else
         {
-            summary = "Not installed — click Install to add Send to Orbit in Classic Outlook.";
+            summary = "Not installed — Orbit will register on next launch, or click Install now.";
         }
 
         return new Status(registered, payload is not null, files, outlook, disabled, payload, summary);
@@ -177,6 +177,37 @@ public static class OutlookLauncherSetup
         catch
         {
             // ignore — Settings Install can retry
+        }
+    }
+
+    /// <summary>
+    /// Ensure Classic Outlook can load the ribbon: register COM when payload exists
+    /// and the add-in is missing or disabled. Sync DLL when already enabled.
+    /// Safe to call on every App launch (HKCU only; no elevation).
+    /// </summary>
+    public static Result EnsureRegisteredOnLaunch()
+    {
+        try
+        {
+            var payload = FindPayloadDirectory();
+            if (payload is null)
+            {
+                return new Result(false, "Outlook launcher payload not found.");
+            }
+
+            var loadBehavior = ReadLoadBehavior();
+            if (loadBehavior == 3)
+            {
+                TrySyncInstalledPayload();
+                return new Result(true, "Outlook add-in already registered.");
+            }
+
+            // Missing key (null) or Outlook quarantine (0/2) → (re)install.
+            return InstallOrUpdate();
+        }
+        catch (Exception ex)
+        {
+            return new Result(false, "Outlook add-in ensure failed: " + ex.Message);
         }
     }
 

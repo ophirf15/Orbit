@@ -147,6 +147,7 @@ public sealed class TaskRelationshipEngine
                 PayloadJson = payload,
                 ProjectId = row.SuccessorProjectId,
                 TaskId = successorId,
+                GroupKey = SuggestionHygiene.DependencyReadyKey(successorId, row.Dependency.Id),
                 Confidence = 0.6,
             }));
         }
@@ -258,6 +259,7 @@ public sealed class TaskRelationshipEngine
                 PayloadJson = payload,
                 ProjectId = task.ProjectId,
                 TaskId = task.Id,
+                GroupKey = SuggestionHygiene.MergeIntoTaskKey(task.Id, emailId),
                 Confidence = confidence,
             }));
         }
@@ -302,6 +304,10 @@ public sealed class TaskRelationshipEngine
             PayloadJson = payload,
             ProjectId = anchor.ProjectId,
             TaskId = successor.Id,
+            GroupKey = SuggestionHygiene.LinkTasksKey(
+                predecessor.Id,
+                successor.Id,
+                candidate.DependencyType),
             Confidence = candidate.Confidence,
         });
     }

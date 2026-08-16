@@ -219,8 +219,7 @@ public static class AgentMonitorEndpoints
             {
                 id = m.Id,
                 title = m.Title,
-                // StartsAt intentionally excluded — volatile relative to "now" windows; use id+title+score for hash stability
-                attentionScore = m.AttentionScore,
+                // attentionScore / startsAt omitted — clock-volatile; monitor hashes id+title only
             })
             .ToList();
 

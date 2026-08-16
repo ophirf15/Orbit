@@ -11,6 +11,14 @@ public static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        // Silent COM registration for Inno (runasoriginaluser) — no UI.
+        if (OrbitPushActivation.ArgsRequestInstallOutlookAddIn(args))
+        {
+            var result = OutlookLauncherSetup.InstallOrUpdate();
+            Environment.ExitCode = result.Ok ? 0 : 1;
+            return;
+        }
+
         WinRT.ComWrappersSupport.InitializeComWrappers();
         var redirected = OrbitPushActivation.DecideRedirectAsync().GetAwaiter().GetResult();
         if (redirected)

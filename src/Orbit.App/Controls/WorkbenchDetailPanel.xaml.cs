@@ -524,8 +524,8 @@ public sealed partial class WorkbenchDetailPanel : UserControl
         }
         else if (_context is not null)
         {
-            OverviewHost.Children.Add(Label("Summary"));
-            var summaryBox = SoftTextBox("Project summary…", minHeight: 72, acceptsReturn: true);
+            OverviewHost.Children.Add(Label("Living brief"));
+            var summaryBox = SoftTextBox("Project living brief…", minHeight: 96, acceptsReturn: true);
             summaryBox.Text = _context.Summary ?? string.Empty;
             summaryBox.Tag = summaryBox.Text;
             summaryBox.LostFocus += async (_, _) =>
@@ -534,6 +534,48 @@ public sealed partial class WorkbenchDetailPanel : UserControl
                 summaryBox.Tag = summaryBox.Text?.Trim() ?? string.Empty;
             };
             OverviewHost.Children.Add(summaryBox);
+
+            var refreshBrief = SoftSubtleButton("Refresh brief");
+            refreshBrief.HorizontalAlignment = HorizontalAlignment.Left;
+            refreshBrief.Click += async (_, _) =>
+            {
+                if (_projectId is null)
+                {
+                    return;
+                }
+
+                refreshBrief.IsEnabled = false;
+                try
+                {
+                    using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+                    var updated = await client.RefreshProjectBriefAsync(_projectId);
+                    if (updated is not null)
+                    {
+                        _context = updated;
+                        summaryBox.Text = _context.Summary ?? string.Empty;
+                        summaryBox.Tag = summaryBox.Text;
+                        BuildOverview();
+                    }
+                    else
+                    {
+                        FooterHint.Text = "Could not refresh living brief.";
+                    }
+                }
+                finally
+                {
+                    refreshBrief.IsEnabled = true;
+                }
+            };
+            OverviewHost.Children.Add(refreshBrief);
+
+            if (_context.Dossier?.CurrentPriorities is { Count: > 0 } priorities)
+            {
+                OverviewHost.Children.Add(Label("Priorities"));
+                foreach (var p in priorities.Take(6))
+                {
+                    OverviewHost.Children.Add(BodyText("· " + p));
+                }
+            }
 
             OverviewHost.Children.Add(Label("Tasks"));
             foreach (var task in _context.Tasks.Take(12))
@@ -844,19 +886,189 @@ public sealed partial class WorkbenchDetailPanel : UserControl
 
     private void AddWaitingOnOverviewSection()
     {
-        if (_links?.WaitingOn.Count > 0)
+        var hasTaskWait = _task?.HasOpenWaiting == true
+            || (!string.IsNullOrWhiteSpace(_task?.WaitingSatisfiedAt)
+                && !string.IsNullOrWhiteSpace(_task?.WaitingOnLabel));
+        var linkWaits = _links?.WaitingOn?.Where(l => !l.Satisfied).Take(6).ToList()
+            ?? [];
+        var satisfiedLinks = _links?.WaitingOn?.Where(l => l.Satisfied).Take(2).ToList()
+            ?? [];
+
+        if (_task is not null && hasTaskWait)
         {
-            foreach (var link in _links.WaitingOn.Take(6))
+            OverviewHost.Children.Add(BuildTaskWaitingOnOverviewRow(_task));
+        }
+
+        foreach (var link in linkWaits)
+        {
+            OverviewHost.Children.Add(BuildWaitingOnOverviewRow(link));
+        }
+
+        foreach (var link in satisfiedLinks)
+        {
+            OverviewHost.Children.Add(BuildWaitingOnOverviewRow(link));
+        }
+
+        if (!hasTaskWait && linkWaits.Count == 0 && satisfiedLinks.Count == 0)
+        {
+            OverviewHost.Children.Add(BodyText(
+                "Not waiting on a person or upstream task. Capture “waiting on …” or use More → Links."));
+        }
+        else
+        {
+            OverviewHost.Children.Add(BodyText("See More → Links to open, unlink, or add more dependencies."));
+        }
+
+        if (_taskId is not null)
+        {
+            var labelBox = SoftTextBox("Waiting on person/org…");
+            if (!string.IsNullOrWhiteSpace(_task?.WaitingOnLabel) && string.IsNullOrWhiteSpace(_task.WaitingSatisfiedAt))
             {
-                OverviewHost.Children.Add(BuildWaitingOnOverviewRow(link));
+                labelBox.Text = _task.WaitingOnLabel;
             }
 
-            OverviewHost.Children.Add(BodyText("See More → Links to open, unlink, or add more dependencies."));
+            var followBox = SoftTextBox("Follow up YYYY-MM-DD");
+            if (!string.IsNullOrWhiteSpace(_task?.WaitingFollowUpAt) && string.IsNullOrWhiteSpace(_task.WaitingSatisfiedAt))
+            {
+                followBox.Text = _task.WaitingFollowUpAt;
+            }
+
+            var setBtn = SoftSubtleButton("Set waiting");
+            setBtn.Click += async (_, _) =>
+            {
+                var label = labelBox.Text?.Trim();
+                var follow = followBox.Text?.Trim();
+                if (string.IsNullOrWhiteSpace(label) && string.IsNullOrWhiteSpace(follow))
+                {
+                    FooterHint.Text = "Enter who you’re waiting on or a follow-up date.";
+                    return;
+                }
+
+                using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+                var ok = await client.SetWaitingOnAsync(
+                    _taskId!,
+                    waitingOnLabel: string.IsNullOrWhiteSpace(label) ? null : label,
+                    followUpAt: string.IsNullOrWhiteSpace(follow) ? null : follow);
+                if (!ok)
+                {
+                    FooterHint.Text = "Could not set waiting-on.";
+                    return;
+                }
+
+                FooterHint.Text = "Waiting-on saved.";
+                ContentChanged?.Invoke(this, EventArgs.Empty);
+                if (_projectId is not null)
+                {
+                    await LoadTaskAsync(_projectId, _taskId!);
+                }
+            };
+            OverviewHost.Children.Add(labelBox);
+            OverviewHost.Children.Add(followBox);
+            OverviewHost.Children.Add(setBtn);
+        }
+    }
+
+    private UIElement BuildTaskWaitingOnOverviewRow(CellLineVm task)
+    {
+        var row = new StackPanel { Spacing = 2, Margin = new Thickness(0, 0, 0, 6) };
+        var who = string.IsNullOrWhiteSpace(task.WaitingOnLabel)
+            ? (string.IsNullOrWhiteSpace(task.WaitingOnPersonId) ? "someone" : "linked contact")
+            : task.WaitingOnLabel!;
+        var cleared = !string.IsNullOrWhiteSpace(task.WaitingSatisfiedAt);
+        row.Children.Add(BodyText(cleared ? $"✓ Was waiting on {who}" : $"Waiting on {who}"));
+
+        var detailParts = new List<string>();
+        var since = OperationalSinceFormatter.FormatSince(task.CreatedAt ?? task.UpdatedAt);
+        if (!string.IsNullOrWhiteSpace(since))
+        {
+            detailParts.Add(since!);
+        }
+
+        if (!string.IsNullOrWhiteSpace(task.WaitingFollowUpAt))
+        {
+            detailParts.Add($"Follow up {task.WaitingFollowUpAt}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(task.WaitingCadence))
+        {
+            detailParts.Add($"every {task.WaitingCadence}");
+        }
+
+        if (cleared && !string.IsNullOrWhiteSpace(task.WaitingEvidenceRef))
+        {
+            detailParts.Add($"cleared · {Truncate(task.WaitingEvidenceRef!, 48)}");
+        }
+
+        if (detailParts.Count > 0)
+        {
+            row.Children.Add(new TextBlock
+            {
+                Text = string.Join(" · ", detailParts),
+                FontSize = 11,
+                Opacity = 0.7,
+                TextWrapping = TextWrapping.Wrap,
+            });
+        }
+
+        if (!cleared && _taskId is not null)
+        {
+            var clear = SoftSubtleButton("Clear with evidence");
+            clear.Click += async (_, _) => await ClearTaskWaitingWithEvidenceAsync();
+            row.Children.Add(clear);
+        }
+
+        return row;
+    }
+
+    private async Task ClearTaskWaitingWithEvidenceAsync()
+    {
+        if (_taskId is null || XamlRoot is null)
+        {
             return;
         }
 
-        OverviewHost.Children.Add(BodyText(
-            "Not waiting on another task. Use More → Links when this work depends on an upstream finish."));
+        var evidenceBox = new TextBox
+        {
+            PlaceholderText = "Note, email, or short proof…",
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            MinHeight = 64,
+            MinWidth = 320,
+        };
+        var dialog = new ContentDialog
+        {
+            Title = "Clear waiting-on",
+            Content = evidenceBox,
+            PrimaryButtonText = "Clear",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = XamlRoot,
+        };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        var evidence = evidenceBox.Text?.Trim();
+        if (string.IsNullOrWhiteSpace(evidence))
+        {
+            FooterHint.Text = "Evidence is required to clear waiting-on.";
+            return;
+        }
+
+        using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+        if (!await client.ClearWaitingOnAsync(_taskId, evidence))
+        {
+            FooterHint.Text = "Could not clear waiting-on.";
+            return;
+        }
+
+        FooterHint.Text = "Waiting cleared with evidence.";
+        ContentChanged?.Invoke(this, EventArgs.Empty);
+        if (_projectId is not null)
+        {
+            await LoadTaskAsync(_projectId, _taskId);
+        }
     }
 
     private UIElement BuildWaitingOnOverviewRow(TaskLinkVm link)
@@ -880,6 +1092,21 @@ public sealed partial class WorkbenchDetailPanel : UserControl
         if (!string.IsNullOrWhiteSpace(since))
         {
             detailParts.Add(since!);
+        }
+
+        if (!string.IsNullOrWhiteSpace(link.FollowUpAt))
+        {
+            detailParts.Add($"Follow up {link.FollowUpAt}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(link.Cadence))
+        {
+            detailParts.Add($"every {link.Cadence}");
+        }
+
+        if (link.Satisfied && !string.IsNullOrWhiteSpace(link.EvidenceRef))
+        {
+            detailParts.Add($"cleared · {Truncate(link.EvidenceRef!, 48)}");
         }
 
         if (detailParts.Count > 0)
@@ -908,11 +1135,15 @@ public sealed partial class WorkbenchDetailPanel : UserControl
             actions.Children.Add(open);
         }
 
-        if (!string.IsNullOrWhiteSpace(link.DependencyId))
+        if (!link.Satisfied && !string.IsNullOrWhiteSpace(link.DependencyId))
         {
-            var clear = SoftSubtleButton("Clear waiting");
-            clear.Click += async (_, _) => await UnlinkAsync(link);
+            var clear = SoftSubtleButton("Clear with evidence");
+            clear.Click += async (_, _) => await SatisfyLinkWithEvidenceAsync(link);
             actions.Children.Add(clear);
+
+            var unlink = SoftSubtleButton("Unlink");
+            unlink.Click += async (_, _) => await UnlinkAsync(link);
+            actions.Children.Add(unlink);
         }
 
         if (actions.Children.Count > 0)
@@ -921,6 +1152,57 @@ public sealed partial class WorkbenchDetailPanel : UserControl
         }
 
         return row;
+    }
+
+    private async Task SatisfyLinkWithEvidenceAsync(TaskLinkVm link)
+    {
+        if (string.IsNullOrWhiteSpace(link.DependencyId) || XamlRoot is null)
+        {
+            return;
+        }
+
+        var evidenceBox = new TextBox
+        {
+            PlaceholderText = "Note, email, or short proof…",
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            MinHeight = 64,
+            MinWidth = 320,
+        };
+        var dialog = new ContentDialog
+        {
+            Title = "Clear waiting link",
+            Content = evidenceBox,
+            PrimaryButtonText = "Clear",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = XamlRoot,
+        };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
+        {
+            return;
+        }
+
+        var evidence = evidenceBox.Text?.Trim();
+        if (string.IsNullOrWhiteSpace(evidence))
+        {
+            FooterHint.Text = "Evidence is required to clear waiting.";
+            return;
+        }
+
+        using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+        if (!await client.SatisfyTaskDependencyAsync(link.DependencyId, evidence))
+        {
+            FooterHint.Text = "Could not clear waiting link.";
+            return;
+        }
+
+        FooterHint.Text = "Waiting link cleared with evidence.";
+        ContentChanged?.Invoke(this, EventArgs.Empty);
+        if (_projectId is not null && _taskId is not null)
+        {
+            await LoadTaskAsync(_projectId, _taskId);
+        }
     }
 
     private void ResetTitleShortenUi(bool showSuggest)

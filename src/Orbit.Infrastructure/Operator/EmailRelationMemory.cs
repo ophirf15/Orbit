@@ -6,7 +6,8 @@ using Orbit.Infrastructure.Suggestions;
 namespace Orbit.Infrastructure.Operator;
 
 /// <summary>
-/// Lightweight Accept/Reject → operator_memory so Hermes can learn email↔task relationships later.
+/// Accept / Reject / Always → <c>operator_memory</c> so Hermes learns from operator decisions
+/// and improves future recommendations (email relations, assign, links, limbo, etc.).
 /// </summary>
 public static class EmailRelationMemory
 {
@@ -17,33 +18,29 @@ public static class EmailRelationMemory
         ArgumentNullException.ThrowIfNull(memory);
         ArgumentNullException.ThrowIfNull(suggestion);
 
-        if (!IsRelationSuggestion(suggestion.SuggestionType))
-        {
-            return;
-        }
+        WriteFact(
+            memory,
+            suggestion,
+            accepted,
+            always: false,
+            source: accepted ? "suggestion.accepted" : "suggestion.rejected");
+    }
 
-        var text = BuildFactText(suggestion, accepted);
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return;
-        }
+    /// <summary>
+    /// Operator chose Accept + Always — record the standing preference as an extra training signal
+    /// (Accept already wrote the accepted fact).
+    /// </summary>
+    public static void RememberAlways(OperatorMemoryStore memory, AgentSuggestionRecord suggestion)
+    {
+        ArgumentNullException.ThrowIfNull(memory);
+        ArgumentNullException.ThrowIfNull(suggestion);
 
-        var scope = string.IsNullOrWhiteSpace(suggestion.ProjectId) ? "global" : suggestion.ProjectId!;
-        memory.Remember(new RememberRequest
-        {
-            Text = text,
-            Kind = Kind,
-            Scope = scope,
-            Confidence = suggestion.Confidence,
-            Source = accepted ? "suggestion.accepted" : "suggestion.rejected",
-            EvidenceRefsJson = JsonSerializer.Serialize(new
-            {
-                suggestionId = suggestion.Id,
-                suggestionType = suggestion.SuggestionType,
-                taskId = suggestion.TaskId,
-                accepted,
-            }),
-        });
+        WriteFact(
+            memory,
+            suggestion,
+            accepted: true,
+            always: true,
+            source: "suggestion.always");
     }
 
     public static IReadOnlyList<string> ListRecentFactLines(OperatorMemoryStore memory, int limit = 12)
@@ -56,36 +53,122 @@ public static class EmailRelationMemory
             .ToList();
     }
 
-    private static bool IsRelationSuggestion(string suggestionType) =>
-        suggestionType is SuggestionTypes.MergeIntoTask
-            or SuggestionTypes.DisambiguateEmailClaim
-            or SuggestionTypes.LinkTasks;
-
-    private static string? BuildFactText(AgentSuggestionRecord suggestion, bool accepted)
+    private static void WriteFact(
+        OperatorMemoryStore memory,
+        AgentSuggestionRecord suggestion,
+        bool accepted,
+        bool always,
+        string source)
     {
-        var verb = accepted ? "related" : "NOT related";
-        if (string.Equals(suggestion.SuggestionType, SuggestionTypes.MergeIntoTask, StringComparison.Ordinal))
+        var text = BuildFactText(suggestion, accepted, always);
+        if (string.IsNullOrWhiteSpace(text))
         {
-            var taskHint = suggestion.TaskId ?? "task";
-            return Truncate($"email-relation: mail {verb} to task {taskHint} — {suggestion.Summary}", 400);
+            return;
         }
 
-        if (string.Equals(suggestion.SuggestionType, SuggestionTypes.DisambiguateEmailClaim, StringComparison.Ordinal))
+        var scope = string.IsNullOrWhiteSpace(suggestion.ProjectId) ? "global" : suggestion.ProjectId!;
+        memory.Remember(new RememberRequest
+        {
+            Text = text,
+            Kind = Kind,
+            Scope = scope,
+            Confidence = suggestion.Confidence,
+            Source = source,
+            EvidenceRefsJson = JsonSerializer.Serialize(new
+            {
+                suggestionId = suggestion.Id,
+                suggestionType = suggestion.SuggestionType,
+                taskId = suggestion.TaskId,
+                projectId = suggestion.ProjectId,
+                accepted,
+                always,
+                confidence = suggestion.Confidence,
+            }),
+        });
+    }
+
+    private static string? BuildFactText(AgentSuggestionRecord suggestion, bool accepted, bool always)
+    {
+        var type = suggestion.SuggestionType ?? string.Empty;
+        var summary = Truncate(suggestion.Summary ?? string.Empty, 220);
+        var conf = suggestion.Confidence is null
+            ? "n/a"
+            : suggestion.Confidence.Value.ToString("0.00");
+
+        if (always)
+        {
+            return Truncate(
+                $"suggestion-train: ALWAYS apply {type} when similar — {summary} (conf {conf})",
+                400);
+        }
+
+        var verb = accepted ? "ACCEPTED" : "REJECTED";
+
+        if (string.Equals(type, SuggestionTypes.MergeIntoTask, StringComparison.Ordinal))
+        {
+            var taskHint = suggestion.TaskId ?? "task";
+            var related = accepted ? "related" : "NOT related";
+            return Truncate(
+                $"suggestion-train: {verb} merge — email {related} to task {taskHint} — {summary} (conf {conf})",
+                400);
+        }
+
+        if (string.Equals(type, SuggestionTypes.DisambiguateEmailClaim, StringComparison.Ordinal))
         {
             var project = suggestion.ProjectId ?? "project";
             return Truncate(
                 accepted
-                    ? $"email-relation: ambiguous mail assigned to project {project} — {suggestion.Summary}"
-                    : $"email-relation: rejected project guess for — {suggestion.Summary}",
+                    ? $"suggestion-train: {verb} email→project {project} — {summary} (conf {conf})"
+                    : $"suggestion-train: {verb} project guess — {summary} (conf {conf})",
                 400);
         }
 
-        if (string.Equals(suggestion.SuggestionType, SuggestionTypes.LinkTasks, StringComparison.Ordinal))
+        if (string.Equals(type, SuggestionTypes.LinkTasks, StringComparison.Ordinal))
         {
-            return Truncate($"email-relation: task link {verb} — {suggestion.Summary}", 400);
+            var related = accepted ? "related" : "NOT related";
+            return Truncate(
+                $"suggestion-train: {verb} task link {related} — {summary} (conf {conf})",
+                400);
         }
 
-        return null;
+        if (string.Equals(type, SuggestionTypes.AssignToProject, StringComparison.Ordinal)
+            || string.Equals(type, SuggestionTypes.AssignProjectLegacy, StringComparison.Ordinal))
+        {
+            return Truncate(
+                $"suggestion-train: {verb} assign_to_project — {summary} (conf {conf})",
+                400);
+        }
+
+        if (string.Equals(type, SuggestionTypes.ReviewLimbo, StringComparison.Ordinal))
+        {
+            return Truncate(
+                $"suggestion-train: {verb} review_limbo — {summary} (conf {conf})",
+                400);
+        }
+
+        if (string.Equals(type, SuggestionTypes.DependencyReady, StringComparison.Ordinal))
+        {
+            return Truncate(
+                $"suggestion-train: {verb} dependency_ready — {summary} (conf {conf})",
+                400);
+        }
+
+        if (string.Equals(type, SuggestionTypes.ReportingRelationship, StringComparison.Ordinal))
+        {
+            return Truncate(
+                $"suggestion-train: {verb} reporting_relationship — {summary} (conf {conf})",
+                400);
+        }
+
+        if (string.Equals(type, SuggestionTypes.LinkContact, StringComparison.Ordinal)
+            || string.Equals(type, SuggestionTypes.ContactMerge, StringComparison.Ordinal))
+        {
+            return Truncate(
+                $"suggestion-train: {verb} {type} — {summary} (conf {conf})",
+                400);
+        }
+
+        return Truncate($"suggestion-train: {verb} {type} — {summary} (conf {conf})", 400);
     }
 
     private static string Truncate(string text, int max) =>

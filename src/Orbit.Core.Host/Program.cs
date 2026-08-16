@@ -71,6 +71,9 @@ public static class Program
         builder.Services.AddSingleton(new WorkbenchLayoutStore(database.Factory));
         builder.Services.AddSingleton(new WorkbenchReadStore(database.Factory));
         builder.Services.AddSingleton(new ProjectContextReadStore(database.Factory));
+        builder.Services.AddSingleton(sp => new ProjectLivingBriefMaintainer(
+            sp.GetRequiredService<ProjectContextReadStore>(),
+            sp.GetRequiredService<ProjectWriteStore>()));
         // NoteWriteStore + sync services registered in OrbitHostWebApp
         var app = OrbitHostWebApp.BuildApp(builder, options);
         try
@@ -80,6 +83,13 @@ public static class Program
             if (dismissed > 0)
             {
                 Console.WriteLine($"Cleared {dismissed} thinking-only suggestion chore(s).");
+            }
+
+            var expired = app.Services.GetRequiredService<Orbit.Infrastructure.Suggestions.SuggestionStore>()
+                .ExpireOlderThan(Orbit.Infrastructure.Suggestions.SuggestionHygiene.DefaultExpireAge);
+            if (expired > 0)
+            {
+                Console.WriteLine($"Expired {expired} aged pending suggestion(s).");
             }
         }
         catch (Exception ex)

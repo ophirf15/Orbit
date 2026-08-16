@@ -6,6 +6,7 @@ using Orbit.Core.Host.Hosting;
 using Orbit.Core.Host.Security;
 using Orbit.Core.Sync;
 using Orbit.Infrastructure.Calendar;
+using Orbit.Infrastructure.Capture;
 using Orbit.Infrastructure.Changes;
 using Orbit.Infrastructure.Contacts;
 using Orbit.Infrastructure.Context;
@@ -121,6 +122,7 @@ public static class OrbitHostWebApp
         app.UseMiddleware<ApiKeyMiddleware>();
         app.MapMetaEndpoints();
         app.MapWorkbenchEndpoints();
+        app.MapCapturePreviewEndpoints();
         app.MapContextBundleEndpoints();
         app.MapProjectFolderEndpoints();
         app.MapEmailEndpoints();
@@ -287,6 +289,13 @@ public static class OrbitHostWebApp
         {
             builder.Services.AddSingleton(sp => new ProjectContextReadStore(sp.GetRequiredService<SqliteConnectionFactory>()));
         }
+
+        if (builder.Services.All(d => d.ServiceType != typeof(ProjectLivingBriefMaintainer)))
+        {
+            builder.Services.AddSingleton(sp => new ProjectLivingBriefMaintainer(
+                sp.GetRequiredService<ProjectContextReadStore>(),
+                sp.GetRequiredService<ProjectWriteStore>()));
+        }
     }
 
     private static void EnsureFileServices(WebApplicationBuilder builder)
@@ -294,6 +303,13 @@ public static class OrbitHostWebApp
         if (builder.Services.All(d => d.ServiceType != typeof(ProjectFolderStore)))
         {
             builder.Services.AddSingleton(sp => new ProjectFolderStore(sp.GetRequiredService<SqliteConnectionFactory>()));
+        }
+
+        if (builder.Services.All(d => d.ServiceType != typeof(CapturePreviewAssembler)))
+        {
+            builder.Services.AddSingleton(sp => new CapturePreviewAssembler(
+                sp.GetRequiredService<SqliteConnectionFactory>(),
+                sp.GetRequiredService<ProjectFolderStore>()));
         }
 
         if (builder.Services.All(d => d.ServiceType != typeof(IExternalFileCapability)))

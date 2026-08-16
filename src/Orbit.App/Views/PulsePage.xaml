@@ -209,44 +209,79 @@
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
 
-                <StackPanel x:Name="UnmatchedMailPanel" Spacing="6" Visibility="Collapsed">
-                    <TextBlock
-                        x:Name="UnmatchedMailHeader"
-                        FontWeight="SemiBold"
-                        Opacity="0.85"
-                        Text="Unmatched mail" />
-                    <ListView
-                        x:Name="UnmatchedMailList"
-                        MaxHeight="160"
-                        AutomationProperties.Name="Unmatched mail"
-                        IsItemClickEnabled="True"
-                        ItemClick="UnmatchedMailList_ItemClick"
-                        SelectionMode="None">
-                        <ListView.ItemTemplate>
-                            <DataTemplate>
-                                <Border
-                                    Margin="0,0,0,6"
-                                    Padding="12,10"
-                                    Background="{ThemeResource OrbitFieldFillBrush}"
-                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                                    BorderThickness="1"
-                                    CornerRadius="{StaticResource ControlCornerRadius}">
-                                    <StackPanel Spacing="2">
-                                        <TextBlock
-                                            Style="{StaticResource BodyStrongTextBlockStyle}"
-                                            Text="{Binding Summary}"
-                                            TextWrapping="Wrap" />
-                                        <TextBlock
-                                            MaxLines="3"
-                                            Opacity="0.75"
-                                            Style="{StaticResource CaptionTextBlockStyle}"
-                                            Text="{Binding CaptionLine}"
-                                            TextWrapping="WrapWholeWords" />
-                                    </StackPanel>
-                                </Border>
-                            </DataTemplate>
-                        </ListView.ItemTemplate>
-                    </ListView>
+                <StackPanel Spacing="10">
+                    <StackPanel x:Name="UnmatchedMailPanel" Spacing="6" Visibility="Collapsed">
+                        <TextBlock
+                            x:Name="UnmatchedMailHeader"
+                            FontWeight="SemiBold"
+                            Opacity="0.85"
+                            Text="Unmatched mail" />
+                        <ListView
+                            x:Name="UnmatchedMailList"
+                            MaxHeight="160"
+                            AutomationProperties.Name="Unmatched mail"
+                            IsItemClickEnabled="True"
+                            ItemClick="UnmatchedMailList_ItemClick"
+                            SelectionMode="None">
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <Border
+                                        Margin="0,0,0,6"
+                                        Padding="12,10"
+                                        Background="{ThemeResource OrbitFieldFillBrush}"
+                                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="{StaticResource ControlCornerRadius}">
+                                        <StackPanel Spacing="2">
+                                            <TextBlock
+                                                Style="{StaticResource BodyStrongTextBlockStyle}"
+                                                Text="{Binding Summary}"
+                                                TextWrapping="Wrap" />
+                                            <TextBlock
+                                                MaxLines="3"
+                                                Opacity="0.75"
+                                                Style="{StaticResource CaptionTextBlockStyle}"
+                                                Text="{Binding CaptionLine}"
+                                                TextWrapping="WrapWholeWords" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                    </StackPanel>
+
+                    <StackPanel x:Name="LowConfidencePanel" Spacing="6" Visibility="Collapsed">
+                        <Grid>
+                            <TextBlock
+                                x:Name="LowConfidenceHeader"
+                                FontWeight="SemiBold"
+                                Opacity="0.85"
+                                Text="Low-confidence suggestions" />
+                            <Button
+                                x:Name="DismissLowButton"
+                                HorizontalAlignment="Right"
+                                Padding="10,4"
+                                Click="DismissLowButton_Click"
+                                Content="Dismiss all low"
+                                Style="{StaticResource SubtleButtonStyle}" />
+                        </Grid>
+                        <ListView
+                            x:Name="LowConfidenceList"
+                            MaxHeight="140"
+                            AutomationProperties.Name="Low confidence suggestions"
+                            SelectionMode="None">
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock
+                                        Margin="0,0,0,4"
+                                        Opacity="0.8"
+                                        Style="{StaticResource CaptionTextBlockStyle}"
+                                        Text="{Binding Summary}"
+                                        TextWrapping="Wrap" />
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                    </StackPanel>
                 </StackPanel>
 
                 <TextBlock

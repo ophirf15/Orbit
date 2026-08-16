@@ -1,8 +1,6 @@
-using System.Text.Json;
 using Orbit.Core.Host;
 using Orbit.Core.Host.Auth;
-using Orbit.Core.Host.Events;
-using Orbit.Core.Operator;
+using Orbit.Core.Pulse;
 using Orbit.Infrastructure.Calendar;
 using Orbit.Infrastructure.Changes;
 using Orbit.Infrastructure.Data;
@@ -57,28 +55,17 @@ public static class PulseEndpoints
         OperatorRunStore runs,
         CalendarReadStore calendar,
         ChangeLogStore changes,
-        OperatorWakeService? wake,
-        EventHub? hub,
         HttpContext http)
     {
         var requestId = ApiKeyMiddleware.GetRequestId(http);
-        var payload = JsonSerializer.Serialize(new { type = "pulse.refresh", source = "host" });
 
-        if (wake is not null)
-        {
-            wake.RequestWake(OperatorTriggers.DutyScan, payload);
-        }
-        else if (hub is not null)
-        {
-            hub.Publish(new OrbitEvent { Type = "pulse.refresh", Payload = new { source = "host" } });
-        }
-
+        // Token hygiene: UI-only refresh. Hermes cron owns duty.scan (ADR 0028).
         var view = pulse.GetPulse();
         var briefing = BuildBriefing(view, pulse, calendar, changes);
         return Results.Json(new
         {
             pulse = MapPulse(view, runs.ListRecent(1).FirstOrDefault(), briefing),
-            refreshQueued = wake is not null || hub is not null,
+            refreshQueued = false,
             requestId,
         });
     }
@@ -213,6 +200,10 @@ public static class PulseEndpoints
             sourceKind = c.SourceKind,
             sourceConfidence = c.SourceConfidence,
             sourceMatchReason = c.SourceMatchReason,
+            waitingOnLabel = c.WaitingOnLabel,
+            waitingFollowUpAt = c.WaitingFollowUpAt,
+            waitingCadence = c.WaitingCadence,
+            waitingSatisfiedAt = c.WaitingSatisfiedAt,
         }),
         unmatchedMail = pulse.UnmatchedMail.Select(m => new
         {
@@ -251,6 +242,12 @@ public static class PulseEndpoints
                     status = w.Status,
                     updatedAt = w.UpdatedAt,
                     ageHours = w.AgeHours,
+                    waitingOnLabel = w.WaitingOnLabel,
+                    followUpAt = w.FollowUpAt,
+                    cadence = w.Cadence,
+                    isStale = w.IsStale,
+                    followUpOverdue = w.FollowUpOverdue,
+                    staleScore = w.StaleScore,
                 }),
                 alerts = briefing.Alerts.Select(a => new
                 {
@@ -313,9 +310,8 @@ public static class PulseEndpoints
             .ToList();
 
         var now = DateTimeOffset.UtcNow;
-        var waiting = pulse.Concerns
-            .Where(c => string.Equals(c.Status, "waiting", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(c.Status, "blocked", StringComparison.OrdinalIgnoreCase))
+        var concernById = pulse.Concerns.ToDictionary(c => c.TaskId, StringComparer.Ordinal);
+        var waitingSignals = pulse.Concerns
             .Select(c =>
             {
                 var ageHours = 0;
@@ -324,18 +320,37 @@ public static class PulseEndpoints
                     ageHours = Math.Max(0, (int)(now - updated).TotalHours);
                 }
 
+                return new WaitingOnStaleRanker.WaitingSignal(
+                    c.TaskId,
+                    c.WaitingOnLabel,
+                    c.WaitingFollowUpAt,
+                    c.WaitingCadence,
+                    c.WaitingSatisfiedAt,
+                    c.UpdatedAt,
+                    c.Status,
+                    ageHours);
+            });
+
+        var waiting = WaitingOnStaleRanker.Rank(waitingSignals, now, take: 8)
+            .Select(r =>
+            {
+                concernById.TryGetValue(r.Signal.TaskId, out var concern);
                 return new PulseBriefingWaitingRecord
                 {
-                    TaskId = c.TaskId,
-                    ProjectName = c.ProjectName,
-                    Title = c.Title,
-                    Status = c.Status,
-                    UpdatedAt = c.UpdatedAt,
-                    AgeHours = ageHours,
+                    TaskId = r.Signal.TaskId,
+                    ProjectName = concern?.ProjectName ?? string.Empty,
+                    Title = concern?.Title ?? string.Empty,
+                    Status = r.Signal.Status,
+                    UpdatedAt = r.Signal.UpdatedAt,
+                    AgeHours = r.Signal.AgeHours,
+                    WaitingOnLabel = r.Signal.WaitingOnLabel,
+                    FollowUpAt = r.Signal.FollowUpAt,
+                    Cadence = r.Signal.Cadence,
+                    IsStale = r.IsStale,
+                    FollowUpOverdue = r.FollowUpOverdue,
+                    StaleScore = r.StaleScore,
                 };
             })
-            .OrderByDescending(w => w.AgeHours)
-            .Take(8)
             .ToList();
 
         var alerts = new List<PulseBriefingAlertRecord>();

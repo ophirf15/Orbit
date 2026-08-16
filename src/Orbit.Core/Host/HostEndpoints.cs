@@ -11,6 +11,7 @@ public static class HostEndpoints
     public const string Projects = "/v1/projects";
     public const string ProjectById = "/v1/projects/{id}";
     public const string ProjectContext = "/v1/projects/{id}/context";
+    public const string ProjectBriefRefresh = "/v1/projects/{id}/brief/refresh";
     public const string ProjectAccent = "/v1/projects/{id}/accent";
     public const string ProjectAliases = "/v1/projects/{id}/aliases";
     public const string ProjectAliasById = "/v1/projects/{id}/aliases/{aliasId}";
@@ -19,6 +20,7 @@ public static class HostEndpoints
     public const string WorkbenchCellLayout = "/v1/workbench/cells/{id}/layout";
     public const string ContextBundle = "/v1/context/bundle";
     public const string Workbench = "/v1/workbench";
+    public const string CapturePreview = "/v1/capture/preview";
     public const string Tasks = "/v1/tasks";
     public const string TaskById = "/v1/tasks/{id}";
     public const string TaskHistory = "/v1/tasks/{id}/history";
@@ -48,6 +50,7 @@ public static class HostEndpoints
     public const string CalendarSourceById = "/v1/calendar/sources/{id}";
     public const string CalendarSubscribe = "/v1/calendar/sources/subscribe";
     public const string Suggestions = "/v1/suggestions";
+    public const string SuggestionsBatchDecide = "/v1/suggestions/batch-decide";
     public const string ConversationsSync = "/v1/conversations/sync";
     public const string ActivityRemote = "/v1/activity/remote";
 
@@ -112,9 +115,12 @@ public static class HostEndpoints
     public const string AgentToolArchiveEntity = "/v1/agent/tools/orbit_archive_entity";
     public const string AgentToolLinkTasks = "/v1/agent/tools/orbit_link_tasks";
     public const string AgentToolUnlinkTasks = "/v1/agent/tools/orbit_unlink_tasks";
+    public const string AgentToolSatisfyTaskDependency = "/v1/agent/tools/orbit_satisfy_task_dependency";
     public const string AgentToolGetTaskDependencies = "/v1/agent/tools/orbit_get_task_dependencies";
     public const string AgentToolSuggestTaskLinks = "/v1/agent/tools/orbit_suggest_task_links";
     public const string AgentToolRejectSuggestion = "/v1/agent/tools/orbit_reject_suggestion";
+    public const string AgentToolSetWaitingOn = "/v1/agent/tools/orbit_set_waiting_on";
+    public const string AgentToolClearWaitingOn = "/v1/agent/tools/orbit_clear_waiting_on";
 
     public const string AgentToolRemember = "/v1/agent/tools/orbit_remember";
     public const string AgentToolForget = "/v1/agent/tools/orbit_forget";

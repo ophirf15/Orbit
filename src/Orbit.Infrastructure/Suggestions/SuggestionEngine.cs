@@ -80,6 +80,7 @@ public sealed class SuggestionEngine
                 PayloadJson = payload,
                 ProjectId = match.Id,
                 NoteId = noteId,
+                GroupKey = SuggestionHygiene.AssignToProjectKey(noteId),
                 Confidence = match.Confidence,
             });
 

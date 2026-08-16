@@ -218,6 +218,39 @@ public sealed class SuggestionApiTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task BatchDecide_Reject_Works()
+    {
+        var factory = new SqliteConnectionFactory(OrbitDbPaths.GetDatabasePath(_options!.LocalDataRoot));
+        var suggestions = new SuggestionStore(factory);
+        var ids = new List<string>();
+        for (var i = 0; i < 3; i++)
+        {
+            ids.Add(suggestions.Create(new CreateSuggestionRequest
+            {
+                SuggestionType = SuggestionTypes.LinkTasks,
+                Summary = $"Batch {i}",
+                GroupKey = $"batch-{i}",
+                Confidence = 0.4,
+            }).Id);
+        }
+
+        var response = await _client!.PostAsJsonAsync(
+            "v1/suggestions/batch-decide",
+            new { ids, decision = "reject", actor = "user" });
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var doc = await JsonDocument.ParseAsync(stream);
+        Assert.Equal(3, doc.RootElement.GetProperty("rejected").GetInt32());
+        Assert.Equal(0, doc.RootElement.GetProperty("failed").GetInt32());
+
+        var low = await _client.GetAsync("v1/suggestions?queue=low");
+        low.EnsureSuccessStatusCode();
+        await using var lowStream = await low.Content.ReadAsStreamAsync();
+        using var lowDoc = await JsonDocument.ParseAsync(lowStream);
+        Assert.Equal(0, lowDoc.RootElement.GetProperty("suggestions").GetArrayLength());
+    }
+
+    [Fact]
     public async Task ExternalDelete_StillForbidden()
     {
         Assert.Equal(HttpStatusCode.Forbidden, (await _client!.PostAsync("v1/files/external/delete", null)).StatusCode);

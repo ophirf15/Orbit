@@ -421,7 +421,7 @@ public sealed partial class ProjectWorkspacePanel : UserControl
         var result = await TaskCapturePrompt.ShowAsync(
             XamlRoot,
             defaultProjectId: _projectId,
-            dialogTitle: "Add task",
+            dialogTitle: "Capture preview",
             showProjectPicker: false,
             allowLimbo: false);
         if (result is null || string.IsNullOrWhiteSpace(result.Title))
@@ -438,18 +438,65 @@ public sealed partial class ProjectWorkspacePanel : UserControl
         };
 
         using var client = new CoreHostClient(App.Settings, App.SettingsStore);
-        var created = await client.CreateTaskAsync(result.Title, _projectId, status: "not_started");
+        var captureText = TaskCapturePrompt.CaptureTextForUpdateMatch(result);
+        var choice = await CaptureNoteOrUpdatePrompt.ResolveAsync(
+            XamlRoot,
+            client,
+            captureText,
+            _projectId);
+        if (choice.Cancelled)
+        {
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(choice.UpdateTaskId))
+        {
+            var ok = await CaptureNoteOrUpdatePrompt.AppendCaptureUpdateAsync(
+                client,
+                choice.UpdateTaskId!,
+                captureText,
+                currentBody: null);
+            FooterHint.Text = ok
+                ? $"Updated “{choice.UpdateTaskTitle ?? "task"}”."
+                : "Could not update task.";
+            if (ok)
+            {
+                ContentChanged?.Invoke(this, EventArgs.Empty);
+                await LoadProjectAsync(_projectId);
+            }
+
+            return;
+        }
+
+        var created = await client.CreateTaskAsync(
+            result.Title,
+            _projectId,
+            nextAction: string.IsNullOrWhiteSpace(result.NextAction) ? null : result.NextAction,
+            body: result.Brief,
+            status: "not_started",
+            sourceKind: result.Source,
+            sourceMatchReason: result.ProjectMatchReason);
         if (created is null)
         {
             FooterHint.Text = "Could not create task.";
             return;
         }
 
-        await client.UpdateTaskAsync(created.Value.Id, priority: priority, urgency: urgency);
+        await client.UpdateTaskAsync(
+            created.Value.Id,
+            priority: priority,
+            urgency: urgency,
+            dueAt: IsIsoDue(result.DueAt) ? result.DueAt : null);
         FooterHint.Text = "Task added.";
         ContentChanged?.Invoke(this, EventArgs.Empty);
         await LoadProjectAsync(_projectId);
     }
+
+    private static bool IsIsoDue(string? dueAt) =>
+        !string.IsNullOrWhiteSpace(dueAt)
+        && dueAt.Length >= 8
+        && dueAt.Contains('-', StringComparison.Ordinal)
+        && !dueAt.StartsWith("by ", StringComparison.OrdinalIgnoreCase);
 
     private void BuildNotes()
     {

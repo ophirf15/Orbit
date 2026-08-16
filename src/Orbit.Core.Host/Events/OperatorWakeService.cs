@@ -13,10 +13,11 @@ using Orbit.Infrastructure.Pulse;
 namespace Orbit.Core.Host.Events;
 
 /// <summary>
-/// Debounces real graph events (email/note/task/suggestion), applies standing rules, then wakes
-/// Hermes for a briefing. ADR 0028: no periodic calendar.soon or duty.scan agent polling — Hermes
-/// cron owns cadence. Falls back silently when Hermes is unreachable (heuristic AgentEventWorker
-/// still runs).
+/// Debounces operator-authored graph events, applies standing rules, then wakes Hermes.
+/// ADR 0028: no periodic calendar.soon / duty.scan Host polling — Hermes cron owns cadence.
+/// Token hygiene: EventHub wakes only for <c>note.created</c>; email uses explicit RequestWake
+/// (XOR webhook); suggestion/task.updated feedback loops are excluded.
+/// Falls back silently when Hermes is unreachable (heuristic AgentEventWorker still runs).
 /// </summary>
 public sealed class OperatorWakeService : BackgroundService
 {
@@ -29,10 +30,9 @@ public sealed class OperatorWakeService : BackgroundService
     private static readonly HashSet<string> InterestingTypes = new(StringComparer.Ordinal)
     {
         "note.created",
-        "email.ingested",
-        "task.updated",
-        "suggestion.created",
-        // calendar.synced is data-only (ADR 0028). Hermes cron owns calendar cadence.
+        // email.ingested: EmailEndpoints RequestWake only (XOR webhook) — not EventHub.
+        // task.updated / suggestion.created: excluded (mutation feedback burns).
+        // calendar.synced: data-only (ADR 0028).
     };
 
     private readonly EventHub _hub;

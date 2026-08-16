@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Orbit.Core.Data;
+using Orbit.Core.Pulse;
 using Orbit.Infrastructure.Data;
 using Orbit.Infrastructure.Email;
 
@@ -40,6 +41,14 @@ public sealed class PulseConcernRecord
     public double? SourceConfidence { get; init; }
 
     public string? SourceMatchReason { get; init; }
+
+    public string? WaitingOnLabel { get; init; }
+
+    public string? WaitingFollowUpAt { get; init; }
+
+    public string? WaitingCadence { get; init; }
+
+    public string? WaitingSatisfiedAt { get; init; }
 }
 
 public sealed class PulseUnmatchedMailRecord
@@ -117,6 +126,18 @@ public sealed class PulseBriefingWaitingRecord
     public required string UpdatedAt { get; init; }
 
     public int AgeHours { get; init; }
+
+    public string? WaitingOnLabel { get; init; }
+
+    public string? FollowUpAt { get; init; }
+
+    public string? Cadence { get; init; }
+
+    public bool IsStale { get; init; }
+
+    public bool FollowUpOverdue { get; init; }
+
+    public int StaleScore { get; init; }
 }
 
 public sealed class PulseBriefingAlertRecord
@@ -507,7 +528,8 @@ public sealed class PulseReadStore
         cmd.CommandText =
             """
             SELECT t.id, t.project_id, p.name, t.title, t.status, t.next_action, t.body, t.updated_at,
-                   t.source_kind, t.source_confidence, t.source_match_reason
+                   t.source_kind, t.source_confidence, t.source_match_reason,
+                   t.waiting_on_label, t.waiting_follow_up_at, t.waiting_cadence, t.waiting_satisfied_at
             FROM tasks t
             INNER JOIN projects p ON p.id = t.project_id
             WHERE t.archived_at IS NULL
@@ -659,6 +681,10 @@ public sealed class PulseReadStore
                 SourceKind = reader.FieldCount > 8 && !reader.IsDBNull(8) ? reader.GetString(8) : null,
                 SourceConfidence = reader.FieldCount > 9 && !reader.IsDBNull(9) ? reader.GetDouble(9) : null,
                 SourceMatchReason = reader.FieldCount > 10 && !reader.IsDBNull(10) ? reader.GetString(10) : null,
+                WaitingOnLabel = reader.FieldCount > 11 && !reader.IsDBNull(11) ? reader.GetString(11) : null,
+                WaitingFollowUpAt = reader.FieldCount > 12 && !reader.IsDBNull(12) ? reader.GetString(12) : null,
+                WaitingCadence = reader.FieldCount > 13 && !reader.IsDBNull(13) ? reader.GetString(13) : null,
+                WaitingSatisfiedAt = reader.FieldCount > 14 && !reader.IsDBNull(14) ? reader.GetString(14) : null,
             });
         }
 

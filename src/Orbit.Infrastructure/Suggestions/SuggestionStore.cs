@@ -22,42 +22,104 @@ public sealed class SuggestionStore
         _memory = memory;
     }
 
-    public IReadOnlyList<AgentSuggestionRecord> List(string? status = null, int limit = 100)
+    public IReadOnlyList<AgentSuggestionRecord> List(
+        string? status = null,
+        int limit = 100,
+        string? projectId = null,
+        double? minConfidence = null,
+        double? maxConfidence = null,
+        string? queue = null)
     {
         using var connection = _factory.CreateConnection();
         using var cmd = connection.CreateCommand();
         var take = Math.Clamp(limit, 1, 500);
-        if (string.IsNullOrWhiteSpace(status))
+
+        var effectiveStatus = status;
+        double? effectiveMin = minConfidence;
+        double? effectiveMax = maxConfidence;
+        var excludeReviewLimbo = false;
+
+        if (!string.IsNullOrWhiteSpace(queue))
         {
-            cmd.CommandText =
-                """
-                SELECT id, suggestion_type, summary, payload_json, project_id, workstream_id, task_id, note_id,
-                       status, confidence, created_at, updated_at
-                FROM agent_suggestions
-                WHERE archived_at IS NULL
-                ORDER BY created_at DESC
-                LIMIT $limit;
-                """;
+            var q = queue.Trim().ToLowerInvariant();
+            if (q is not (SuggestionHygiene.QueueLow or SuggestionHygiene.QueueReview))
+            {
+                throw new ArgumentException("Unknown suggestion queue. Use review or low.", nameof(queue));
+            }
+
+            effectiveStatus = SuggestionStatuses.Pending;
+            excludeReviewLimbo = true;
+            if (string.Equals(q, SuggestionHygiene.QueueLow, StringComparison.Ordinal))
+            {
+                // null confidence treated as low
+                effectiveMax = Math.Min(
+                    effectiveMax ?? SuggestionHygiene.ActionableMinConfidence,
+                    SuggestionHygiene.ActionableMinConfidence);
+                // max is exclusive upper bound for low queue via SQL: confidence IS NULL OR < 0.55
+            }
+            else
+            {
+                effectiveMin = Math.Max(
+                    effectiveMin ?? SuggestionHygiene.ActionableMinConfidence,
+                    SuggestionHygiene.ActionableMinConfidence);
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(effectiveStatus) && !SuggestionStatuses.All.Contains(effectiveStatus))
+        {
+            throw new ArgumentException("Unknown suggestion status.", nameof(status));
+        }
+
+        var where = new List<string> { "archived_at IS NULL" };
+        if (!string.IsNullOrWhiteSpace(effectiveStatus))
+        {
+            where.Add("status = $status");
+            cmd.Parameters.AddWithValue("$status", effectiveStatus);
+        }
+
+        if (!string.IsNullOrWhiteSpace(projectId))
+        {
+            where.Add("project_id = $project");
+            cmd.Parameters.AddWithValue("$project", projectId.Trim());
+        }
+
+        if (excludeReviewLimbo)
+        {
+            where.Add("suggestion_type <> $reviewLimbo");
+            cmd.Parameters.AddWithValue("$reviewLimbo", SuggestionTypes.ReviewLimbo);
+        }
+
+        var isLowQueue = !string.IsNullOrWhiteSpace(queue)
+            && string.Equals(queue.Trim(), SuggestionHygiene.QueueLow, StringComparison.OrdinalIgnoreCase);
+        if (isLowQueue)
+        {
+            where.Add("(confidence IS NULL OR confidence < $lowMax)");
+            cmd.Parameters.AddWithValue("$lowMax", SuggestionHygiene.ActionableMinConfidence);
         }
         else
         {
-            if (!SuggestionStatuses.All.Contains(status))
+            if (effectiveMin is not null)
             {
-                throw new ArgumentException("Unknown suggestion status.", nameof(status));
+                where.Add("confidence IS NOT NULL AND confidence >= $minConf");
+                cmd.Parameters.AddWithValue("$minConf", effectiveMin.Value);
             }
 
-            cmd.CommandText =
-                """
-                SELECT id, suggestion_type, summary, payload_json, project_id, workstream_id, task_id, note_id,
-                       status, confidence, created_at, updated_at
-                FROM agent_suggestions
-                WHERE archived_at IS NULL AND status = $status
-                ORDER BY created_at DESC
-                LIMIT $limit;
-                """;
-            cmd.Parameters.AddWithValue("$status", status);
+            if (effectiveMax is not null)
+            {
+                where.Add("confidence IS NOT NULL AND confidence < $maxConf");
+                cmd.Parameters.AddWithValue("$maxConf", effectiveMax.Value);
+            }
         }
 
+        cmd.CommandText =
+            $"""
+            SELECT id, suggestion_type, summary, payload_json, project_id, workstream_id, task_id, note_id,
+                   group_key, status, confidence, created_at, updated_at
+            FROM agent_suggestions
+            WHERE {string.Join(" AND ", where)}
+            ORDER BY created_at DESC
+            LIMIT $limit;
+            """;
         cmd.Parameters.AddWithValue("$limit", take);
         return ReadAll(cmd);
     }
@@ -70,7 +132,7 @@ public sealed class SuggestionStore
         cmd.CommandText =
             """
             SELECT id, suggestion_type, summary, payload_json, project_id, workstream_id, task_id, note_id,
-                   status, confidence, created_at, updated_at
+                   group_key, status, confidence, created_at, updated_at
             FROM agent_suggestions
             WHERE id = $id AND archived_at IS NULL
             LIMIT 1;
@@ -85,6 +147,17 @@ public sealed class SuggestionStore
         ArgumentException.ThrowIfNullOrWhiteSpace(request.SuggestionType);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Summary);
 
+        var suggestionType = request.SuggestionType.Trim();
+        var groupKey = string.IsNullOrWhiteSpace(request.GroupKey) ? null : request.GroupKey.Trim();
+        if (groupKey is not null)
+        {
+            var existing = FindPendingByGroupKey(suggestionType, groupKey);
+            if (existing is not null)
+            {
+                return RefreshPendingOnDedupe(existing, request);
+            }
+        }
+
         var now = DateTime.UtcNow.ToString("O");
         var id = Guid.NewGuid().ToString("D");
         using var connection = _factory.CreateConnection();
@@ -93,25 +166,269 @@ public sealed class SuggestionStore
             """
             INSERT INTO agent_suggestions (
               id, suggestion_type, summary, payload_json, project_id, workstream_id, task_id, note_id,
-              status, confidence, created_at, updated_at)
+              group_key, status, confidence, created_at, updated_at)
             VALUES (
               $id, $type, $summary, $payload, $project, $ws, $task, $note,
-              $status, $confidence, $t, $t);
+              $group, $status, $confidence, $t, $t);
             """;
         cmd.Parameters.AddWithValue("$id", id);
-        cmd.Parameters.AddWithValue("$type", request.SuggestionType.Trim());
+        cmd.Parameters.AddWithValue("$type", suggestionType);
         cmd.Parameters.AddWithValue("$summary", request.Summary.Trim());
         cmd.Parameters.AddWithValue("$payload", (object?)request.PayloadJson ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$project", (object?)request.ProjectId ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$ws", (object?)request.WorkstreamId ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$task", (object?)request.TaskId ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$note", (object?)request.NoteId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$group", (object?)groupKey ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$status", SuggestionStatuses.Pending);
         cmd.Parameters.AddWithValue("$confidence", (object?)request.Confidence ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$t", now);
-        cmd.ExecuteNonQuery();
+
+        try
+        {
+            cmd.ExecuteNonQuery();
+        }
+        catch (SqliteException ex) when (groupKey is not null && IsUniqueConstraint(ex))
+        {
+            var raced = FindPendingByGroupKey(suggestionType, groupKey)
+                ?? throw new InvalidOperationException(
+                    "Pending suggestion race on group_key but existing row was not readable.",
+                    ex);
+            return RefreshPendingOnDedupe(raced, request);
+        }
 
         return Get(id) ?? throw new InvalidOperationException("Suggestion was not readable after insert.");
+    }
+
+    private AgentSuggestionRecord? FindPendingByGroupKey(string suggestionType, string groupKey)
+    {
+        using var connection = _factory.CreateConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            """
+            SELECT id, suggestion_type, summary, payload_json, project_id, workstream_id, task_id, note_id,
+                   group_key, status, confidence, created_at, updated_at
+            FROM agent_suggestions
+            WHERE suggestion_type = $type
+              AND group_key = $group
+              AND status = $status
+              AND archived_at IS NULL
+            LIMIT 1;
+            """;
+        cmd.Parameters.AddWithValue("$type", suggestionType);
+        cmd.Parameters.AddWithValue("$group", groupKey);
+        cmd.Parameters.AddWithValue("$status", SuggestionStatuses.Pending);
+        return ReadAll(cmd).FirstOrDefault();
+    }
+
+    private AgentSuggestionRecord RefreshPendingOnDedupe(
+        AgentSuggestionRecord existing,
+        CreateSuggestionRequest request)
+    {
+        var now = DateTime.UtcNow.ToString("O");
+        var keepConfidence = existing.Confidence;
+        if (request.Confidence is not null
+            && (keepConfidence is null || request.Confidence.Value > keepConfidence.Value))
+        {
+            keepConfidence = request.Confidence;
+        }
+
+        using var connection = _factory.CreateConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            """
+            UPDATE agent_suggestions
+            SET summary = $summary,
+                payload_json = COALESCE($payload, payload_json),
+                project_id = COALESCE($project, project_id),
+                workstream_id = COALESCE($ws, workstream_id),
+                task_id = COALESCE($task, task_id),
+                note_id = COALESCE($note, note_id),
+                confidence = $confidence,
+                updated_at = $t
+            WHERE id = $id;
+            """;
+        cmd.Parameters.AddWithValue("$summary", request.Summary.Trim());
+        cmd.Parameters.AddWithValue("$payload", (object?)request.PayloadJson ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$project", (object?)request.ProjectId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$ws", (object?)request.WorkstreamId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$task", (object?)request.TaskId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$note", (object?)request.NoteId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$confidence", (object?)keepConfidence ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$t", now);
+        cmd.Parameters.AddWithValue("$id", existing.Id);
+        cmd.ExecuteNonQuery();
+
+        return Get(existing.Id)
+            ?? throw new InvalidOperationException("Suggestion was not readable after dedupe refresh.");
+    }
+
+    private static bool IsUniqueConstraint(SqliteException ex) =>
+        ex.SqliteExtendedErrorCode is 2067 or 1555
+        || ex.Message.Contains("UNIQUE constraint failed", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Marks aged pending suggestions as expired. Returns rows updated.</summary>
+    public int ExpireOlderThan(TimeSpan age)
+    {
+        if (age < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(age));
+        }
+
+        var cutoff = DateTime.UtcNow.Subtract(age).ToString("O");
+        var now = DateTime.UtcNow.ToString("O");
+        using var connection = _factory.CreateConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText =
+            """
+            UPDATE agent_suggestions
+            SET status = $expired, updated_at = $t
+            WHERE status = $pending
+              AND archived_at IS NULL
+              AND created_at < $cutoff;
+            """;
+        cmd.Parameters.AddWithValue("$expired", SuggestionStatuses.Expired);
+        cmd.Parameters.AddWithValue("$t", now);
+        cmd.Parameters.AddWithValue("$pending", SuggestionStatuses.Pending);
+        cmd.Parameters.AddWithValue("$cutoff", cutoff);
+        return cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Accept, reject, or expire many suggestions. Continues on per-id errors.
+    /// </summary>
+    public IReadOnlyList<SuggestionBatchDecideItemResult> BatchDecide(
+        IReadOnlyList<string> ids,
+        string decision,
+        string? actor = null,
+        string? applyProjectId = null)
+    {
+        ArgumentNullException.ThrowIfNull(ids);
+        ArgumentException.ThrowIfNullOrWhiteSpace(decision);
+
+        var action = decision.Trim().ToLowerInvariant();
+        if (action is not ("accept" or "reject" or "expire"))
+        {
+            throw new ArgumentException("Decision must be accept, reject, or expire.", nameof(decision));
+        }
+
+        var results = new List<SuggestionBatchDecideItemResult>(ids.Count);
+        foreach (var rawId in ids)
+        {
+            if (string.IsNullOrWhiteSpace(rawId))
+            {
+                results.Add(new SuggestionBatchDecideItemResult
+                {
+                    Id = rawId ?? string.Empty,
+                    Ok = false,
+                    Error = "Suggestion id is required.",
+                });
+                continue;
+            }
+
+            var id = rawId.Trim();
+            try
+            {
+                switch (action)
+                {
+                    case "accept":
+                    {
+                        var accepted = Accept(id, actor, applyProjectId: applyProjectId);
+                        results.Add(new SuggestionBatchDecideItemResult
+                        {
+                            Id = id,
+                            Ok = true,
+                            Suggestion = accepted.Suggestion,
+                            AppliedNoteId = accepted.AppliedNoteId,
+                            AppliedProjectId = accepted.AppliedProjectId,
+                            CreatedTaskId = accepted.CreatedTaskId,
+                        });
+                        break;
+                    }
+
+                    case "reject":
+                    {
+                        var rejected = Reject(id, actor);
+                        results.Add(new SuggestionBatchDecideItemResult
+                        {
+                            Id = id,
+                            Ok = true,
+                            Suggestion = rejected,
+                        });
+                        break;
+                    }
+
+                    case "expire":
+                    {
+                        var expired = Expire(id, actor);
+                        results.Add(new SuggestionBatchDecideItemResult
+                        {
+                            Id = id,
+                            Ok = true,
+                            Suggestion = expired,
+                        });
+                        break;
+                    }
+
+                    default:
+                        throw new InvalidOperationException($"Unhandled decision '{action}'.");
+                }
+            }
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+            {
+                results.Add(new SuggestionBatchDecideItemResult
+                {
+                    Id = id,
+                    Ok = false,
+                    Error = ex.Message,
+                });
+            }
+        }
+
+        return results;
+    }
+
+    public AgentSuggestionRecord Expire(string id, string? actor = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(id);
+        var suggestion = Get(id)
+            ?? throw new ArgumentException("Suggestion was not found.", nameof(id));
+        if (!string.Equals(suggestion.Status, SuggestionStatuses.Pending, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"Suggestion status is '{suggestion.Status}', expected pending.");
+        }
+
+        var requestedBy = string.IsNullOrWhiteSpace(actor) ? CreatedByActors.User : actor.Trim();
+        var now = DateTime.UtcNow.ToString("O");
+
+        using var connection = _factory.CreateConnection();
+        using var tx = connection.BeginTransaction();
+        using (var upd = connection.CreateCommand())
+        {
+            upd.Transaction = tx;
+            upd.CommandText =
+                """
+                UPDATE agent_suggestions
+                SET status = $status, updated_at = $t
+                WHERE id = $id;
+                """;
+            upd.Parameters.AddWithValue("$status", SuggestionStatuses.Expired);
+            upd.Parameters.AddWithValue("$t", now);
+            upd.Parameters.AddWithValue("$id", id);
+            upd.ExecuteNonQuery();
+        }
+
+        WriteAudit(
+            connection,
+            tx,
+            "suggestion.expired",
+            id,
+            requestedBy,
+            new { suggestionType = suggestion.SuggestionType, noteId = suggestion.NoteId },
+            now);
+
+        tx.Commit();
+        return Get(id)!;
     }
 
     public bool HasPendingForNote(string noteId, string suggestionType)
@@ -885,10 +1202,11 @@ public sealed class SuggestionStore
                 WorkstreamId = reader.IsDBNull(5) ? null : reader.GetString(5),
                 TaskId = reader.IsDBNull(6) ? null : reader.GetString(6),
                 NoteId = reader.IsDBNull(7) ? null : reader.GetString(7),
-                Status = reader.GetString(8),
-                Confidence = reader.IsDBNull(9) ? null : reader.GetDouble(9),
-                CreatedAt = reader.GetString(10),
-                UpdatedAt = reader.GetString(11),
+                GroupKey = reader.IsDBNull(8) ? null : reader.GetString(8),
+                Status = reader.GetString(9),
+                Confidence = reader.IsDBNull(10) ? null : reader.GetDouble(10),
+                CreatedAt = reader.GetString(11),
+                UpdatedAt = reader.GetString(12),
             });
         }
 

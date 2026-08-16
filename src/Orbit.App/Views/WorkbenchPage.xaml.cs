@@ -50,10 +50,13 @@ public sealed partial class WorkbenchPage : Page
     private bool _pulseBusy;
     private OrbitEventListener? _eventListener;
     private DateTimeOffset _lastPulseReloadUtc = DateTimeOffset.MinValue;
+    private List<string> _lowConfidenceSuggestionIds = [];
+    private readonly ObservableCollection<PendingSuggestionVm> _reviewQueue = [];
     private readonly ObservableCollection<OrbitTreeNodeVm> _treeRoots = [];
     private OrbitTreeNodeVm? _selectedNode;
     private readonly Dictionary<string, OrbitTreeNodeVm> _nodesById = new(StringComparer.Ordinal);
     private OrbitTreeNodeVm? _treeDragNode;
+    private bool _reviewDecideBusy;
 
     private sealed class CaptureClarifySession
     {
@@ -76,6 +79,7 @@ public sealed partial class WorkbenchPage : Page
     {
         InitializeComponent();
         AgentMessageList.ItemsSource = _agentBubbles;
+        ReviewQueueList.ItemsSource = _reviewQueue;
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
         KeyDown += WorkbenchPage_KeyDown;
@@ -357,6 +361,178 @@ public sealed partial class WorkbenchPage : Page
     private void HermesStrip_ConcernClicked(object? sender, string taskId) =>
         _ = SelectTaskInTreeAsync(taskId);
 
+    private async void HermesStrip_DismissLowConfidenceRequested(object? sender, EventArgs e) =>
+        await DismissAllLowConfidenceAsync();
+
+    private void HermesStrip_OpenReviewRequested(object? sender, EventArgs e) =>
+        OpenReviewQueue(expand: true);
+
+    private async void ReviewDismissAllButton_Click(object sender, RoutedEventArgs e) =>
+        await DismissAllLowConfidenceAsync();
+
+    private async void ReviewAcceptButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string id } || string.IsNullOrWhiteSpace(id))
+        {
+            return;
+        }
+
+        await DecideReviewSuggestionAsync(id, "accept");
+    }
+
+    private async void ReviewRejectButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string id } || string.IsNullOrWhiteSpace(id))
+        {
+            return;
+        }
+
+        await DecideReviewSuggestionAsync(id, "reject");
+    }
+
+    private async void ReviewAlwaysButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string id } || string.IsNullOrWhiteSpace(id))
+        {
+            return;
+        }
+
+        await DecideReviewSuggestionAsync(id, "always");
+    }
+
+    private void OpenReviewQueue(bool expand)
+    {
+        if (_reviewQueue.Count == 0)
+        {
+            ReviewQueueExpander.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        ReviewQueueExpander.Visibility = Visibility.Visible;
+        if (expand)
+        {
+            ReviewQueueExpander.IsExpanded = true;
+        }
+    }
+
+    private void BindReviewQueue(IReadOnlyList<PendingSuggestionVm> items)
+    {
+        _reviewQueue.Clear();
+        foreach (var item in items)
+        {
+            _reviewQueue.Add(item);
+        }
+
+        _lowConfidenceSuggestionIds = items
+            .Select(s => s.Id)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToList()!;
+
+        var count = _reviewQueue.Count;
+        ReviewQueueHeaderText.Text = count == 0
+            ? "Review queue"
+            : count == 1
+                ? "Review queue · 1"
+                : $"Review queue · {count}";
+        ReviewDismissAllButton.IsEnabled = count > 0;
+        HermesStrip.BindLowConfidence(count);
+
+        if (count == 0)
+        {
+            ReviewQueueExpander.Visibility = Visibility.Collapsed;
+            ReviewQueueExpander.IsExpanded = false;
+            return;
+        }
+
+        ReviewQueueExpander.Visibility = Visibility.Visible;
+    }
+
+    private async Task DismissAllLowConfidenceAsync()
+    {
+        if (_lowConfidenceSuggestionIds.Count == 0)
+        {
+            return;
+        }
+
+        HermesStrip.SetBusy(true);
+        ReviewDismissAllButton.IsEnabled = false;
+        try
+        {
+            using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+            var result = await client.BatchDecideSuggestionsAsync(_lowConfidenceSuggestionIds, "reject");
+            WorkbenchHint.Text = result.Rejected > 0
+                ? $"Dismissed {result.Rejected} — Hermes will learn from these rejections."
+                : "Could not dismiss low-confidence suggestions.";
+            await ReloadPulseAsync(refresh: false);
+            await ReloadWorkbenchAsync();
+        }
+        catch (Exception ex)
+        {
+            WorkbenchHint.Text = $"Dismiss failed: {ex.Message}";
+        }
+        finally
+        {
+            HermesStrip.SetBusy(false);
+            ReviewDismissAllButton.IsEnabled = _reviewQueue.Count > 0;
+        }
+    }
+
+    private async Task DecideReviewSuggestionAsync(string suggestionId, string decision)
+    {
+        if (_reviewDecideBusy || string.IsNullOrWhiteSpace(suggestionId))
+        {
+            return;
+        }
+
+        _reviewDecideBusy = true;
+        HermesStrip.SetBusy(true);
+        try
+        {
+            using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+            bool ok;
+            string feedback;
+            switch (decision)
+            {
+                case "accept":
+                    ok = await client.AcceptSuggestionAsync(suggestionId);
+                    feedback = ok
+                        ? "Accepted — Hermes will use this as training signal."
+                        : "Accept failed.";
+                    break;
+                case "reject":
+                    ok = await client.RejectSuggestionAsync(suggestionId);
+                    feedback = ok
+                        ? "Rejected — Hermes will avoid similar weak guesses."
+                        : "Reject failed.";
+                    break;
+                case "always":
+                    ok = await client.AcceptSuggestionAlwaysAsync(suggestionId);
+                    feedback = ok
+                        ? "Always — standing rule saved and Hermes trained."
+                        : "Always failed.";
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(decision), decision, "Unknown review decision.");
+            }
+
+            WorkbenchHint.Text = feedback;
+            if (ok)
+            {
+                await ReloadPulseAsync(refresh: false);
+                await ReloadWorkbenchAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            WorkbenchHint.Text = $"Review decide failed: {ex.Message}";
+        }
+        finally
+        {
+            HermesStrip.SetBusy(false);
+            _reviewDecideBusy = false;
+        }
+    }
+
     private void StartPulsePolling()
     {
         StopPulsePolling();
@@ -400,11 +576,22 @@ public sealed partial class WorkbenchPage : Page
                 ? await client.RefreshPulseAsync()
                 : await client.GetPulseAsync();
             HermesStrip.Bind(pulse);
+            try
+            {
+                var low = await client.GetSuggestionsAsync(queue: "low");
+                BindReviewQueue(low);
+            }
+            catch
+            {
+                BindReviewQueue([]);
+            }
+
             _lastPulseReloadUtc = DateTimeOffset.UtcNow;
         }
         catch (Exception)
         {
             HermesStrip.Bind(null);
+            BindReviewQueue([]);
         }
         finally
         {
@@ -1861,7 +2048,7 @@ public sealed partial class WorkbenchPage : Page
         var result = await TaskCapturePrompt.ShowAsync(
             XamlRoot,
             defaultProjectId: defaultProjectId,
-            dialogTitle: isSubtask ? "New subtask" : "New task",
+            dialogTitle: isSubtask ? "New subtask" : "Capture preview",
             showProjectPicker: !isSubtask,
             allowLimbo: !isSubtask,
             initialTitle: initialTitle);
@@ -1874,24 +2061,127 @@ public sealed partial class WorkbenchPage : Page
         if (string.IsNullOrWhiteSpace(result.ProjectId))
         {
             WorkbenchHint.Text = "Parking in Limbo…";
-            await CaptureAsync(result.Title, projectId: null, projectName: "Limbo");
+            var limboText = string.IsNullOrWhiteSpace(result.OriginalText)
+                ? result.Title
+                : result.OriginalText.Trim();
+            await CaptureAsync(limboText, projectId: null, projectName: "Limbo");
             return true;
         }
 
-        await CreateTaskUnderAsync(result.ProjectId, parentTaskId, result.Title);
+        var captureText = TaskCapturePrompt.CaptureTextForUpdateMatch(result);
+
+        // Top-level capture: offer update-existing when an open task looks like a match.
+        // Subtasks stay on the create path (parent choice already expresses intent).
+        if (!isSubtask)
+        {
+            using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+            var choice = await CaptureNoteOrUpdatePrompt.ResolveAsync(
+                XamlRoot,
+                client,
+                captureText,
+                result.ProjectId);
+            if (choice.Cancelled)
+            {
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(choice.UpdateTaskId))
+            {
+                await AppendCaptureUpdateToTaskAsync(
+                    client,
+                    choice.UpdateTaskId!,
+                    choice.UpdateTaskTitle ?? "task",
+                    captureText);
+                return true;
+            }
+        }
+
+        await CreateTaskUnderAsync(
+            result.ProjectId,
+            parentTaskId,
+            result.Title,
+            nextAction: result.NextAction,
+            body: result.Brief,
+            dueAt: result.DueAt,
+            sourceKind: result.Source,
+            sourceMatchReason: result.ProjectMatchReason,
+            waitingOn: result.WaitingOn);
         return true;
     }
 
-    private async Task CreateTaskUnderAsync(string projectId, string? parentTaskId, string title)
+    private async Task AppendCaptureUpdateToTaskAsync(
+        CoreHostClient client,
+        string taskId,
+        string taskTitle,
+        string captureText)
+    {
+        try
+        {
+            WorkbenchHint.Text = "Appending update…";
+            var ok = await CaptureNoteOrUpdatePrompt.AppendCaptureUpdateAsync(
+                client,
+                taskId,
+                captureText,
+                currentBody: null);
+            if (!ok)
+            {
+                WorkbenchHint.Text = "Could not update task.";
+                return;
+            }
+
+            await ReloadWorkbenchAsync();
+            await SelectTaskInTreeAsync(taskId);
+            WorkbenchHint.Text = $"Updated “{taskTitle}”.";
+        }
+        catch (Exception ex)
+        {
+            WorkbenchHint.Text = $"Update failed: {ex.Message}";
+        }
+    }
+
+    private async Task CreateTaskUnderAsync(
+        string projectId,
+        string? parentTaskId,
+        string title,
+        string? nextAction = null,
+        string? body = null,
+        string? dueAt = null,
+        string? sourceKind = null,
+        string? sourceMatchReason = null,
+        string? waitingOn = null)
     {
         try
         {
             using var client = new CoreHostClient(App.Settings, App.SettingsStore);
-            var created = await client.CreateTaskAsync(title, projectId, nextAction: "Define next move", body: "");
+            var created = await client.CreateTaskAsync(
+                title,
+                projectId,
+                nextAction: string.IsNullOrWhiteSpace(nextAction) ? "Define next move" : nextAction,
+                body: body ?? string.Empty,
+                sourceKind: sourceKind,
+                sourceMatchReason: sourceMatchReason);
             if (created is null)
             {
                 WorkbenchHint.Text = "Could not create task.";
                 return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(dueAt)
+                && dueAt.Length >= 8
+                && dueAt.Contains('-', StringComparison.Ordinal)
+                && !dueAt.StartsWith("by ", StringComparison.OrdinalIgnoreCase))
+            {
+                await client.UpdateTaskAsync(created.Value.Id, dueAt: dueAt);
+            }
+
+            if (!string.IsNullOrWhiteSpace(waitingOn))
+            {
+                // Best-effort: seed waiting state from capture preview without inventing a fake upstream task.
+                var followUp = Orbit.Core.Pulse.WaitingOnStaleRanker.DefaultFollowUpAt();
+                await client.SetWaitingOnAsync(
+                    created.Value.Id,
+                    waitingOnLabel: waitingOn.Trim(),
+                    followUpAt: followUp);
             }
 
             if (!string.IsNullOrWhiteSpace(parentTaskId))
@@ -3908,6 +4198,44 @@ public sealed partial class WorkbenchPage : Page
         try
         {
             using var client = new CoreHostClient(App.Settings, App.SettingsStore);
+            var limbo = await client.GetLimboNoteAsync(noteId);
+            var captureText = limbo?.OriginalText?.Trim() ?? string.Empty;
+
+            if (XamlRoot is not null && captureText.Length > 0)
+            {
+                var choice = await CaptureNoteOrUpdatePrompt.ResolveAsync(
+                    XamlRoot,
+                    client,
+                    captureText,
+                    projectId);
+                if (choice.Cancelled)
+                {
+                    return;
+                }
+
+                if (!string.IsNullOrWhiteSpace(choice.UpdateTaskId))
+                {
+                    var ok = await CaptureNoteOrUpdatePrompt.AppendCaptureUpdateAsync(
+                        client,
+                        choice.UpdateTaskId!,
+                        captureText,
+                        currentBody: null);
+                    if (!ok)
+                    {
+                        WorkbenchHint.Text = "Could not update task.";
+                        return;
+                    }
+
+                    await client.ArchiveEntityAsync(EntityTypes.Note, noteId);
+                    _limboEmailByNoteId.Remove(noteId);
+                    WorkbenchHint.Text =
+                        $"Updated “{choice.UpdateTaskTitle ?? "task"}” on {projectName}.";
+                    await ReloadWorkbenchAsync();
+                    await SelectTaskInTreeAsync(choice.UpdateTaskId!);
+                    return;
+                }
+            }
+
             var result = await client.AssignLimboNoteAsync(noteId, projectId);
             if (result is null || string.IsNullOrWhiteSpace(result.TaskId))
             {

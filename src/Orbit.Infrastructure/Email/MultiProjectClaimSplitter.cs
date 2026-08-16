@@ -175,6 +175,7 @@ public sealed class MultiProjectClaimSplitter
             SuggestionType = SuggestionTypes.DisambiguateEmailClaim,
             Summary = summary,
             PayloadJson = payload,
+            GroupKey = SuggestionHygiene.DisambiguateEmailKey(emailId),
             Confidence = 0.35,
         });
         return suggestion.Id;

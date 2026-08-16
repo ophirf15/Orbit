@@ -151,6 +151,31 @@ public sealed class CellLineVm
 
     public string? SourceMatchReason { get; set; }
 
+    public string? WaitingOnLabel { get; set; }
+
+    public string? WaitingOnPersonId { get; set; }
+
+    public string? WaitingOnOrganizationId { get; set; }
+
+    public string? WaitingFollowUpAt { get; set; }
+
+    public string? WaitingCadence { get; set; }
+
+    public string? WaitingSatisfiedAt { get; set; }
+
+    public string? WaitingEvidenceRef { get; set; }
+
+    public string? CreatedAt { get; set; }
+
+    public string? UpdatedAt { get; set; }
+
+    public bool HasOpenWaiting =>
+        string.IsNullOrWhiteSpace(WaitingSatisfiedAt)
+        && (!string.IsNullOrWhiteSpace(WaitingOnLabel)
+            || !string.IsNullOrWhiteSpace(WaitingOnPersonId)
+            || !string.IsNullOrWhiteSpace(WaitingOnOrganizationId)
+            || string.Equals(Status, "waiting", StringComparison.OrdinalIgnoreCase));
+
     public string? SourceLine
     {
         get
@@ -375,7 +400,15 @@ public sealed class TaskLinkVm
 
     public string? CreatedAt { get; set; }
 
-    /// <summary>The counterpart task is complete, so a gating edge is cleared.</summary>
+    public string? FollowUpAt { get; set; }
+
+    public string? Cadence { get; set; }
+
+    public string? EvidenceRef { get; set; }
+
+    public string? SatisfiedAt { get; set; }
+
+    /// <summary>The counterpart task is complete, or the edge was cleared with evidence.</summary>
     public bool Satisfied { get; set; }
 }
 
@@ -393,7 +426,51 @@ public sealed class PendingSuggestionVm
 
     public string? PayloadJson { get; set; }
 
+    public string? GroupKey { get; set; }
+
     public double? Confidence { get; set; }
+
+    public string TypeLabel => SuggestionType switch
+    {
+        "merge_into_task" => "Merge into task",
+        "disambiguate_email_claim" => "Pick project",
+        "assign_to_project" or "assign_project" => "Assign to project",
+        "link_tasks" => "Link tasks",
+        "review_limbo" => "Review limbo",
+        "dependency_ready" => "Dependency ready",
+        "reporting_relationship" => "Reporting link",
+        "link_contact" => "Link contact",
+        "contact_merge" => "Merge contacts",
+        _ => string.IsNullOrWhiteSpace(SuggestionType) ? "Suggestion" : SuggestionType.Replace('_', ' '),
+    };
+
+    public string ConfidenceLabel => Confidence is null
+        ? "no score"
+        : $"{Confidence.Value:P0}";
+
+    public string MetaLine => $"{TypeLabel} · {ConfidenceLabel}";
+}
+
+public sealed class SuggestionBatchDecideResult
+{
+    public int Accepted { get; set; }
+
+    public int Rejected { get; set; }
+
+    public int Expired { get; set; }
+
+    public int Failed { get; set; }
+
+    public IReadOnlyList<SuggestionBatchDecideItemVm> Results { get; set; } = [];
+}
+
+public sealed class SuggestionBatchDecideItemVm
+{
+    public string Id { get; set; } = string.Empty;
+
+    public bool Ok { get; set; }
+
+    public string? Error { get; set; }
 }
 
 public sealed class TaskEmailThreadVm

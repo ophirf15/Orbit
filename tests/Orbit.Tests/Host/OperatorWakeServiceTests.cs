@@ -100,6 +100,58 @@ public sealed class OperatorWakeServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task SuggestionCreated_DoesNotEnqueueOperatorRun()
+    {
+        var hub = _app!.Services.GetRequiredService<EventHub>();
+        var runs = _app.Services.GetRequiredService<OperatorRunStore>();
+
+        hub.Publish(new OrbitEvent
+        {
+            Type = "suggestion.created",
+            Payload = new { suggestionId = "s1", suggestionType = "merge_into_task" },
+        });
+
+        await Task.Delay(TimeSpan.FromMilliseconds(1500));
+
+        Assert.DoesNotContain(runs.ListRecent(10), r => r.TriggerKind.Contains("suggestion", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task TaskUpdated_EventHub_DoesNotEnqueueOperatorRun()
+    {
+        var hub = _app!.Services.GetRequiredService<EventHub>();
+        var runs = _app.Services.GetRequiredService<OperatorRunStore>();
+
+        hub.Publish(new OrbitEvent
+        {
+            Type = "task.updated",
+            Payload = new { taskId = "t1", projectId = "p1" },
+        });
+
+        await Task.Delay(TimeSpan.FromMilliseconds(1500));
+
+        Assert.DoesNotContain(runs.ListRecent(10), r => r.TriggerKind == OperatorTriggers.TaskUpdated);
+    }
+
+    [Fact]
+    public async Task EmailIngested_EventHubAlone_DoesNotEnqueueOperatorRun()
+    {
+        // Token hygiene: email wakes only via RequestWake (XOR webhook), not EventHub.
+        var hub = _app!.Services.GetRequiredService<EventHub>();
+        var runs = _app.Services.GetRequiredService<OperatorRunStore>();
+
+        hub.Publish(new OrbitEvent
+        {
+            Type = "email.ingested",
+            Payload = new { emailId = "e1" },
+        });
+
+        await Task.Delay(TimeSpan.FromMilliseconds(1500));
+
+        Assert.Empty(runs.ListRecent(10));
+    }
+
+    [Fact]
     public void OperatorWakeService_HasNoCalendarSoonPollingLoop()
     {
         var method = typeof(OperatorWakeService).GetMethod(

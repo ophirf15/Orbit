@@ -96,14 +96,30 @@ public sealed class PulseBriefingWaitingVm
 
     public int AgeHours { get; set; }
 
+    public string? WaitingOnLabel { get; set; }
+
+    public string? FollowUpAt { get; set; }
+
+    public string? Cadence { get; set; }
+
+    public bool IsStale { get; set; }
+
+    public bool FollowUpOverdue { get; set; }
+
+    public int StaleScore { get; set; }
+
     public string Line
     {
         get
         {
+            var who = string.IsNullOrWhiteSpace(WaitingOnLabel) ? Title : WaitingOnLabel!;
             var age = AgeHours >= 48
                 ? $"{AgeHours / 24}d"
                 : $"{AgeHours}h";
-            return $"{ProjectName}: {Title} · {Status} · {age}";
+            var stale = IsStale
+                ? (FollowUpOverdue ? " · follow-up due" : " · stale")
+                : string.Empty;
+            return $"{ProjectName}: {who} · {Status} · {age}{stale}";
         }
     }
 }
@@ -193,6 +209,14 @@ public sealed class PulseConcernVm
 
     public string? SourceMatchReason { get; set; }
 
+    public string? WaitingOnLabel { get; set; }
+
+    public string? WaitingFollowUpAt { get; set; }
+
+    public string? WaitingCadence { get; set; }
+
+    public string? WaitingSatisfiedAt { get; set; }
+
     public string StatusLabel => Status switch
     {
         "blocked" => "Blocked",
@@ -212,7 +236,13 @@ public sealed class PulseConcernVm
 
     /// <summary>Human reason why this concern needs attention (text, not color-only).</summary>
     public string ReasonLabel =>
-        AttentionReasonClassifier.Classify(Status, NextAction, SourceKind, UpdatedAt);
+        AttentionReasonClassifier.Classify(
+            Status,
+            NextAction,
+            SourceKind,
+            UpdatedAt,
+            waitingFollowUpAt: WaitingFollowUpAt,
+            waitingSatisfiedAt: WaitingSatisfiedAt);
 
     public string SubtitleLine =>
         string.IsNullOrWhiteSpace(NextAction)

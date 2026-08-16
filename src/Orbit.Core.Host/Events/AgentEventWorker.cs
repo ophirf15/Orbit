@@ -24,6 +24,7 @@ public sealed class AgentEventWorker : BackgroundService
     private readonly SuggestionEngine _engine;
     private readonly TaskRelationshipEngine _relationships;
     private readonly ContactRelationEngine _contactRelations;
+    private readonly SuggestionStore _suggestions;
     private readonly ILogger<AgentEventWorker> _logger;
     private readonly ConcurrentDictionary<string, byte> _pendingNoteIds = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, byte> _pendingEmailIds = new(StringComparer.Ordinal);
@@ -38,12 +39,14 @@ public sealed class AgentEventWorker : BackgroundService
         SuggestionEngine engine,
         TaskRelationshipEngine relationships,
         ContactRelationEngine contactRelations,
+        SuggestionStore suggestions,
         ILogger<AgentEventWorker> logger)
     {
         _hub = hub;
         _engine = engine;
         _relationships = relationships;
         _contactRelations = contactRelations;
+        _suggestions = suggestions;
         _logger = logger;
     }
 
@@ -157,6 +160,15 @@ public sealed class AgentEventWorker : BackgroundService
         {
             // newer event reset the debounce window
             return;
+        }
+
+        try
+        {
+            _suggestions.ExpireOlderThan(SuggestionHygiene.DefaultExpireAge);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Suggestion expire pass failed");
         }
 
         foreach (var noteId in Drain(_pendingNoteIds))

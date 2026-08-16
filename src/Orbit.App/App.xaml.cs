@@ -47,7 +47,8 @@ public partial class App : Application
         ThemeService.ApplyToWindow(_window, Settings.ThemePreference);
         HostConnection = new CoreHostConnectionService(Settings, SettingsStore);
         OrbitPushActivation.EnsureProtocolRegistered();
-        OutlookLauncherSetup.TrySyncInstalledPayload();
+        // Installer stages DLLs only — register COM on first launch / when Outlook disabled the add-in.
+        _ = OutlookLauncherSetup.EnsureRegisteredOnLaunch();
         _pushWatcher = OrbitPushSignal.StartWatcher(() => TryAcceptPushSignal("signal-watcher"));
 
         // UI-thread poll — survives cases where background waiters stall under COM/load.

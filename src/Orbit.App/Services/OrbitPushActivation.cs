@@ -15,6 +15,7 @@ public static class OrbitPushActivation
     public const string ProtocolScheme = "orbit";
     public const string PushOutlookHost = "push-outlook";
     public const string PushOutlookArg = "--push-outlook";
+    public const string InstallOutlookAddInArg = "--install-outlook-addin";
     public const string AppInstanceKey = "Orbit.App";
 
     public static event Action? PushOutlookRequested;
@@ -53,6 +54,12 @@ public static class OrbitPushActivation
         return string.Equals(uri.Scheme, ProtocolScheme, StringComparison.OrdinalIgnoreCase)
             && string.Equals(uri.Host, PushOutlookHost, StringComparison.OrdinalIgnoreCase);
     }
+
+    public static bool ArgsRequestInstallOutlookAddIn(IEnumerable<string> args) =>
+        args.Any(a => string.Equals(
+            a.Trim().Trim('"'),
+            InstallOutlookAddInArg,
+            StringComparison.OrdinalIgnoreCase));
 
     public static bool ArgsRequestPushOutlook(IEnumerable<string> args) =>
         args.Any(IsPushOutlookActivation);

@@ -19,6 +19,7 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
             <Grid ColumnSpacing="12">
@@ -83,16 +84,49 @@
                 </StackPanel>
             </Expander>
 
+            <Grid
+                x:Name="LowConfidencePanel"
+                Grid.Row="2"
+                ColumnSpacing="8"
+                Visibility="Collapsed">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock
+                    x:Name="LowConfidenceText"
+                    VerticalAlignment="Center"
+                    Opacity="0.75"
+                    Style="{StaticResource CaptionTextBlockStyle}"
+                    Text="Low-confidence suggestions"
+                    TextTrimming="CharacterEllipsis" />
+                <Button
+                    x:Name="OpenReviewButton"
+                    Grid.Column="1"
+                    Click="OpenReviewButton_Click"
+                    Content="Review"
+                    Style="{StaticResource AccentButtonStyle}"
+                    ToolTipService.ToolTip="Open the sidebar review queue — decisions train Hermes" />
+                <Button
+                    x:Name="DismissLowButton"
+                    Grid.Column="2"
+                    Click="DismissLowButton_Click"
+                    Content="Dismiss all"
+                    Style="{StaticResource SubtleButtonStyle}"
+                    ToolTipService.ToolTip="Reject all pending suggestions below the review confidence band" />
+            </Grid>
+
             <TextBlock
                 x:Name="ConcernsHeader"
-                Grid.Row="2"
+                Grid.Row="3"
                 FontWeight="SemiBold"
                 Opacity="0.85"
                 Text="Needs you now"
                 Visibility="Collapsed" />
 
             <ScrollViewer
-                Grid.Row="3"
+                Grid.Row="4"
                 MaxHeight="128"
                 HorizontalScrollBarVisibility="Auto"
                 HorizontalScrollMode="Enabled"

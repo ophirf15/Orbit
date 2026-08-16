@@ -18,7 +18,7 @@ Out-of-process Outlook COM (already used for calendar and App push) is stable.
 2. **App shortcuts:** Ctrl+Shift+O / Workbench **Push Outlook mail** use the same App pull + memo dialog.
 3. **Office.js web add-in** (`src/Orbit.OutlookWebAddIn`) and Host `POST /v1/emails/from-outlook` remain **experimental / parked** — not the daily driver.
 4. **In-proc ingest COM** (`Orbit.OutlookAddIn`, `scripts/register-outlook-addin.ps1`) stays **deprecated**; do not register. Use Settings → **Classic Outlook add-in** → Install / Update (or `scripts/register-outlook-launcher.ps1`) for the thin launcher only.
-5. **Installer:** `pack-installer.ps1` publishes `outlook-launcher\` next to the app; Inno stages it under `{app}` and `%LocalAppData%\Orbit\OutlookLauncher`. Registration is **per-user HKCU** via Settings (not silent admin COM registration).
+5. **Installer:** `pack-installer.ps1` publishes `outlook-launcher\` next to the app; Inno stages it under `{app}` and `%LocalAppData%\Orbit\OutlookLauncher`. Registration is **per-user HKCU** (not HKLM / elevated admin hive): Setup runs `Orbit.App.exe --install-outlook-addin` with `runasoriginaluser`, and App launch calls `EnsureRegisteredOnLaunch` when the add-in is missing or Outlook-disabled. Settings → Install / Update remains the repair path.
 6. **Hermes** does not read Outlook; it reasons after ingest (memo in `email.ingested` payload + capture note).
 7. **Drag/drop remains fallback** (ADR 0009). Graph remains future when IT issues a public client ID.
 

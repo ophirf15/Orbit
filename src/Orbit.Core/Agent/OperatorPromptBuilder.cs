@@ -44,7 +44,7 @@ public static class OperatorPromptBuilder
         if (emailRelationMemory is { Count: > 0 })
         {
             sb.AppendLine();
-            sb.AppendLine("Learned email↔task relations (operator Accept/Reject):");
+            sb.AppendLine("Operator suggestion decisions (training — prefer these over weak guesses):");
             var joined = string.Join(
                 "\n",
                 emailRelationMemory

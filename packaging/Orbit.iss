@@ -75,6 +75,8 @@ Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\Assets\AppIcon.ico"; Tasks: desktopicon
 
 [Run]
+; Register Classic Outlook ribbon as the installing user (HKCU) — not the elevated admin hive.
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--install-outlook-addin"; StatusMsg: "Registering Classic Outlook add-in…"; Flags: runasoriginaluser waituntilterminated
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 [Code]
@@ -87,6 +89,8 @@ begin
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM Orbit.App.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM Orbit.Core.Host.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM Orbit.Mcp.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  { Outlook locks OutlookLauncher.dll — close so LocalAppData / {app} copies can replace. }
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM OUTLOOK.EXE /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Sleep(1000);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM Orbit.Mcp.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM Orbit.Core.Host.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
